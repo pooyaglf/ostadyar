@@ -1,0 +1,5 @@
+{
+  "api_base_url": "https://tapi.bale.ai/bot",
+  "poll_timeout_seconds": 25
+}
+
