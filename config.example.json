@@ -1,5 +1,5 @@
 {
   "api_base_url": "https://tapi.bale.ai/bot",
-  "poll_timeout_seconds": 25
+  "poll_timeout_seconds": 25,
+  "sheet_export_url": "https://docs.google.com/spreadsheets/d/1sDIbSkFHlgsqxrYZyK2diG53eh4LT09h/export?format=xlsx"
 }
-
