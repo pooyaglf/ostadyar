@@ -36,8 +36,15 @@ START_MESSAGE = (
     "لطفا شماره همراه خود را جهت مشاهده ی نام دانشجویان اینترن مربوط به مطب خود را وارد نمایید"
 )
 
-INVALID_PHONE_MESSAGE = "شماره همراه وجود ندارد"
+INVALID_PHONE_MESSAGE = "با عرض پوزش شماره ی وارد شده ثبت نشده است"
 SCHEDULE_FOOTER = "برنامه کلاس های شما به شکل بالا هست و در روز کلاس برای شما یک پیام یاداوری ارسال خواهد شد"
+VIEW_CLASSES_TEXT = "مشاهده برنامه کلاس‌ها"
+REGISTERED_PHONE_MESSAGE = "شماره همراه شما قبلا با شماره {phone} ثبت شده است."
+LOGIN_SUCCESS_MESSAGE = (
+    "با عرض سلام خدمت {professor_name}\n"
+    "ضمن تشکر از زحمات شما\n"
+    "لیست دانشجویان ماه آینده ی شما به صورت زیر است"
+)
 
 PERSIAN_MONTHS = {
     "فروردین": 1,
@@ -182,8 +189,11 @@ class BaleBot:
             payload["offset"] = self.offset
         return self.request("getUpdates", payload)
 
-    def send_message(self, chat_id, text):
-        return self.request("sendMessage", {"chat_id": chat_id, "text": text})
+    def send_message(self, chat_id, text, keyboard=None):
+        payload = {"chat_id": chat_id, "text": text}
+        if keyboard:
+            payload["reply_markup"] = keyboard
+        return self.request("sendMessage", payload)
 
 
 class SheetSchedule:
@@ -279,6 +289,26 @@ def get_chat_professor(chat_id):
     return normalize_text(chat_registry().get(str(chat_id), {}).get("professor"))
 
 
+def get_chat_registration(chat_id):
+    item = chat_registry().get(str(chat_id), {})
+    return {
+        "phone": normalize_phone(item.get("phone")),
+        "professor": normalize_text(item.get("professor")),
+    }
+
+
+def classes_keyboard():
+    return {
+        "keyboard": [[{"text": VIEW_CLASSES_TEXT}]],
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+    }
+
+
+def format_phone(phone):
+    return to_persian_digits(normalize_phone(phone))
+
+
 def format_schedule(professor_name, schedule, schedule_reader):
     year, _, month_name = schedule_reader.month_info()
     if not schedule:
@@ -291,6 +321,15 @@ def format_schedule(professor_name, schedule, schedule_reader):
         )
     lines.extend(["", SCHEDULE_FOOTER])
     return "\n".join(lines)
+
+
+def format_login_schedule(professor_name, schedule, schedule_reader):
+    return "\n\n".join(
+        [
+            LOGIN_SUCCESS_MESSAGE.format(professor_name=professor_name),
+            format_schedule(professor_name, schedule, schedule_reader),
+        ]
+    )
 
 
 def format_reminder(professor_name, day_schedule, schedule_reader):
@@ -311,20 +350,64 @@ def handle_message(bot, schedule_reader, message):
     text = normalize_text(message.get("text"))
     if chat_id is None:
         return
+
+    registration = get_chat_registration(chat_id)
+    registered_phone = registration["phone"]
+    registered_professor = registration["professor"]
+
     if text == "/start":
+        if registered_phone and registered_professor:
+            schedule = schedule_reader.schedule_for_professor(registered_professor)
+            bot.send_message(
+                chat_id,
+                format_login_schedule(registered_professor, schedule, schedule_reader),
+                keyboard=classes_keyboard(),
+            )
+            return
         bot.send_message(chat_id, START_MESSAGE)
         return
+
+    if text == VIEW_CLASSES_TEXT:
+        if registered_phone and registered_professor:
+            schedule = schedule_reader.schedule_for_professor(registered_professor)
+            bot.send_message(
+                chat_id,
+                format_schedule(registered_professor, schedule, schedule_reader),
+                keyboard=classes_keyboard(),
+            )
+            return
+        bot.send_message(chat_id, START_MESSAGE)
+        return
+
     phone = normalize_phone(text)
+    if registered_phone and registered_professor:
+        if phone and phone != registered_phone:
+            bot.send_message(
+                chat_id,
+                REGISTERED_PHONE_MESSAGE.format(phone=format_phone(registered_phone)),
+                keyboard=classes_keyboard(),
+            )
+            return
+        schedule = schedule_reader.schedule_for_professor(registered_professor)
+        bot.send_message(
+            chat_id,
+            format_schedule(registered_professor, schedule, schedule_reader),
+            keyboard=classes_keyboard(),
+        )
+        return
+
     phones = professor_phone_map()
     if phone in phones:
         professor = phones[phone]
         set_chat_professor(chat_id, phone, professor)
-        bot.send_message(chat_id, format_schedule(professor, schedule_reader.schedule_for_professor(professor), schedule_reader))
+        schedule = schedule_reader.schedule_for_professor(professor)
+        bot.send_message(
+            chat_id,
+            format_login_schedule(professor, schedule, schedule_reader),
+            keyboard=classes_keyboard(),
+        )
         return
-    professor = get_chat_professor(chat_id)
-    if professor:
-        bot.send_message(chat_id, format_schedule(professor, schedule_reader.schedule_for_professor(professor), schedule_reader))
-        return
+
     bot.send_message(chat_id, INVALID_PHONE_MESSAGE)
 
 

@@ -13,10 +13,12 @@ https://docs.google.com/spreadsheets/d/1sDIbSkFHlgsqxrYZyK2diG53eh4LT09h/export?
 1. Professor sends `/start`.
 2. Bot asks for mobile number.
 3. Bot checks the number in `data/professor_phones.json`.
-4. If the number exists, the bot stores the professor against the Bale `chat_id` in `data/chat_ids.json`.
-5. Bot reads the Google Sheet and sends only that professor's student schedule.
-6. Empty cells and `*` cells are skipped.
-7. On class day, the bot sends a morning reminder to that professor's saved chat ID.
+4. If the number exists, the bot stores one professor phone against the Bale `chat_id` in `data/chat_ids.json`.
+5. A chat ID cannot change to another professor phone. If another number is sent later, the bot rejects it and shows the saved number.
+6. Bot reads the Google Sheet and sends only that professor's student schedule.
+7. Empty cells and `*` cells are skipped.
+8. After login, the bot shows one button for viewing the class schedule again.
+9. On class day, the bot sends a morning reminder to that professor's saved chat ID.
 
 ## Run Locally
 
