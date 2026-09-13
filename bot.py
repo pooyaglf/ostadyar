@@ -34,8 +34,8 @@ ABSENCES_XLSX_PATH = Path(os.getenv("ABSENCES_XLSX_PATH", DATA_DIR / "absences.x
 SCHEDULE_YEAR_OVERRIDE = ""
 SCHEDULE_MONTH_OVERRIDE = ""
 CURRENT_JALALI_DATE_OVERRIDE = ""
-REMINDER_TIME = "09:00"
-ATTENDANCE_TIME = "23:16"
+REMINDER_TIME = "23:29"
+ATTENDANCE_TIME = "23:34"
 SCHEDULER_INTERVAL_SECONDS = 15
 BOT_TIMEZONE = "Asia/Tehran"
 MANUAL_TEST_CLASSES = []
@@ -574,7 +574,7 @@ def format_reminder(professor_name, day_schedule, schedule_reader):
     year, _, month_name = schedule_reader.month_info()
     day = day_schedule[0]["day"]
     lines = [
-        f"یادآوری برنامه امروز {professor_name}",
+        f"با عرض سلام , یادآوری برنامه امروز {professor_name}",
         f"{day_schedule[0]['weekday']} {to_persian_digits(day)} {month_name} {to_persian_digits(year)}",
         "",
     ]
@@ -584,7 +584,7 @@ def format_reminder(professor_name, day_schedule, schedule_reader):
 
 
 def format_attendance_question(item):
-    return f"آیا دانشجوی {item['student']} در کلاس امروز شما حضور پیدا کرد؟"
+    return f"با عرض سلام و خسته نباشید خدمت استاد گرامی , آیا دانشجوی {item['student']} در کلاس امروز شما حضور پیدا کرده است؟"
 
 
 def pending_attendance():
