@@ -13,6 +13,7 @@ from pathlib import Path
 from threading import Thread
 
 import requests
+from openpyxl import Workbook
 from openpyxl import load_workbook
 
 
@@ -22,15 +23,37 @@ if hasattr(sys.stdout, "reconfigure"):
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 CONFIG_PATH = BASE_DIR / "config.local.json"
-PROFESSOR_PHONES_PATH = Path(os.getenv("PROFESSOR_PHONES_PATH", DATA_DIR / "professor_phones.json"))
 CHAT_IDS_PATH = Path(os.getenv("CHAT_IDS_PATH", DATA_DIR / "chat_ids.json"))
-REMINDERS_SENT_PATH = Path(os.getenv("REMINDERS_SENT_PATH", DATA_DIR / "reminders_sent.json"))
+PENDING_ATTENDANCE_PATH = Path(os.getenv("PENDING_ATTENDANCE_PATH", DATA_DIR / "pending_attendance.json"))
+ABSENCES_FALLBACK_PATH = Path(os.getenv("ABSENCES_FALLBACK_PATH", DATA_DIR / "absences_fallback.json"))
+ABSENCES_XLSX_PATH = Path(os.getenv("ABSENCES_XLSX_PATH", DATA_DIR / "absences.xlsx"))
+
+# Main operational settings. Change these values, then restart the bot.
+# Leave these empty to read year/month from the class sheet title.
+SCHEDULE_YEAR_OVERRIDE = ""
+SCHEDULE_MONTH_OVERRIDE = ""
+CURRENT_JALALI_DATE_OVERRIDE = ""
+REMINDER_TIME = "02:57"
+ATTENDANCE_TIME = "02:58"
+SCHEDULER_INTERVAL_SECONDS = 15
+MANUAL_TEST_CLASSES = []
 
 DEFAULT_SHEET_EXPORT_URL = (
+    # Active class schedule sheet:
+    # https://docs.google.com/spreadsheets/d/1jwQ-2k6zbOGLTgPjSpOXGvnlBRWm70Mk/edit
     "https://docs.google.com/spreadsheets/d/"
-    "1sDIbSkFHlgsqxrYZyK2diG53eh4LT09h/export?format=xlsx"
+    "1jwQ-2k6zbOGLTgPjSpOXGvnlBRWm70Mk/export?format=xlsx"
 )
-
+DEFAULT_CONTACTS_EXPORT_URL = (
+    # Professor phone sheet + absence sheet:
+    # https://docs.google.com/spreadsheets/d/1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/edit
+    "https://docs.google.com/spreadsheets/d/"
+    "1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/export?format=xlsx"
+)
+DEFAULT_ABSENCE_WEBHOOK_URL = (
+    "https://script.google.com/macros/s/"
+    "AKfycbw6Mn9mGMjkUsQKaLRiY6MDV22Xc6jtWB4BPpzJo3vQk7rvr1wC6h-ZfQQwD89FECo/exec"
+)
 START_MESSAGE = (
     "با عرض سلام و خوش آمد خدمت اساتید گرامی\n"
     "لطفا شماره همراه خود را جهت مشاهده ی نام دانشجویان اینترن مربوط به مطب خود را وارد نمایید"
@@ -38,7 +61,9 @@ START_MESSAGE = (
 
 INVALID_PHONE_MESSAGE = "با عرض پوزش شماره ی وارد شده ثبت نشده است"
 SCHEDULE_FOOTER = "برنامه کلاس های شما به شکل بالا هست و در روز کلاس برای شما یک پیام یاداوری ارسال خواهد شد"
-VIEW_CLASSES_TEXT = "مشاهده برنامه کلاس‌ها"
+VIEW_CLASSES_TEXT = "برنامه ماهانه کلینیک ویژه من"
+ATTENDANCE_YES_TEXT = "بله"
+ATTENDANCE_NO_TEXT = "خیر"
 REGISTERED_PHONE_MESSAGE = "شماره همراه شما قبلا با شماره {phone} ثبت شده است."
 LOGIN_SUCCESS_MESSAGE = (
     "با عرض سلام خدمت {professor_name}\n"
@@ -60,6 +85,19 @@ PERSIAN_MONTHS = {
     "بهمن": 11,
     "اسفند": 12,
 }
+
+PERSIAN_WEEKDAYS = [
+    "دوشنبه",
+    "سه شنبه",
+    "چهارشنبه",
+    "پنج شنبه",
+    "جمعه",
+    "شنبه",
+    "یکشنبه",
+]
+
+REMINDERS_SENT_THIS_RUN = set()
+ATTENDANCE_SENT_THIS_RUN = set()
 
 
 def read_json(path, default):
@@ -86,12 +124,26 @@ def normalize_text(value):
 
 
 def normalize_phone(value):
-    digits = re.sub(r"\D+", "", str(value or ""))
+    if isinstance(value, float) and value.is_integer():
+        value = str(int(value))
+    elif isinstance(value, int):
+        value = str(value)
+    else:
+        value = str(value or "").strip()
+        if re.fullmatch(r"\d+\.0", value):
+            value = value[:-2]
+    digits = re.sub(r"\D+", "", value)
     if digits.startswith("0098"):
         digits = "0" + digits[4:]
     elif digits.startswith("98") and len(digits) == 12:
         digits = "0" + digits[2:]
+    elif digits.startswith("9") and len(digits) == 10:
+        digits = "0" + digits
     return digits
+
+
+def compact_text(value):
+    return normalize_text(value).replace(" ", "")
 
 
 def to_persian_digits(value):
@@ -126,12 +178,98 @@ def gregorian_to_jalali(g_year, g_month, g_day):
     return jy, jm + 1, j_day_no + 1
 
 
+def jalali_to_gregorian(j_year, j_month, j_day):
+    j_days_in_month = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29]
+    g_days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+    jy = j_year - 979
+    jm = j_month - 1
+    jd = j_day - 1
+
+    j_day_no = 365 * jy + (jy // 33) * 8 + ((jy % 33) + 3) // 4
+    for index in range(jm):
+        j_day_no += j_days_in_month[index]
+    j_day_no += jd
+
+    g_day_no = j_day_no + 79
+    gy = 1600 + 400 * (g_day_no // 146097)
+    g_day_no %= 146097
+
+    leap = True
+    if g_day_no >= 36525:
+        g_day_no -= 1
+        gy += 100 * (g_day_no // 36524)
+        g_day_no %= 36524
+        if g_day_no >= 365:
+            g_day_no += 1
+        else:
+            leap = False
+
+    gy += 4 * (g_day_no // 1461)
+    g_day_no %= 1461
+
+    if g_day_no >= 366:
+        leap = False
+        g_day_no -= 1
+        gy += g_day_no // 365
+        g_day_no %= 365
+
+    gm = 0
+    while gm < 11:
+        days_in_month = g_days_in_month[gm]
+        if gm == 1 and leap:
+            days_in_month += 1
+        if g_day_no < days_in_month:
+            break
+        g_day_no -= days_in_month
+        gm += 1
+
+    return gy, gm + 1, g_day_no + 1
+
+
+def jalali_weekday_name(j_year, j_month, j_day):
+    g_year, g_month, g_day = jalali_to_gregorian(j_year, j_month, j_day)
+    return PERSIAN_WEEKDAYS[date(g_year, g_month, g_day).weekday()]
+
+
 def parse_jalali_date(value):
     if value:
         year, month, day = [int(part) for part in value.split("-")]
         return year, month, day
     today = date.today()
     return gregorian_to_jalali(today.year, today.month, today.day)
+
+
+def config_value(config, env_name, key, default=None):
+    value = os.getenv(env_name)
+    if value is not None:
+        return value
+    return config.get(key, default)
+
+
+def config_bool(config, env_name, key, default=False):
+    value = config_value(config, env_name, key, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_time(value, default):
+    value = str(value or default).strip()
+    if ":" in value:
+        hour, minute = value.split(":", 1)
+        return int(hour), int(minute)
+    return int(value), 0
+
+
+def time_reached(now, value):
+    hour, minute = parse_time(value, "00:00")
+    return (now.hour, now.minute) >= (hour, minute)
+
+
+def time_matches(now, value):
+    hour, minute = parse_time(value, "00:00")
+    return now.hour == hour and now.minute == minute
 
 
 def load_config():
@@ -143,6 +281,20 @@ def load_config():
     config["api_base_url"] = os.getenv("API_BASE_URL", config.get("api_base_url", "https://tapi.bale.ai/bot"))
     config["poll_timeout_seconds"] = os.getenv("POLL_TIMEOUT_SECONDS", config.get("poll_timeout_seconds", 25))
     config["sheet_export_url"] = os.getenv("SHEET_EXPORT_URL", config.get("sheet_export_url", DEFAULT_SHEET_EXPORT_URL))
+    config["contacts_export_url"] = os.getenv(
+        "CONTACTS_EXPORT_URL",
+        config.get("contacts_export_url", DEFAULT_CONTACTS_EXPORT_URL),
+    )
+    config["absence_webhook_url"] = os.getenv(
+        "ABSENCE_WEBHOOK_URL",
+        config.get("absence_webhook_url", DEFAULT_ABSENCE_WEBHOOK_URL),
+    )
+    config["current_jalali_date"] = os.getenv("CURRENT_JALALI_DATE", CURRENT_JALALI_DATE_OVERRIDE)
+    config["schedule_year_override"] = os.getenv("SCHEDULE_YEAR_OVERRIDE", str(SCHEDULE_YEAR_OVERRIDE))
+    config["schedule_month_override"] = os.getenv("SCHEDULE_MONTH_OVERRIDE", str(SCHEDULE_MONTH_OVERRIDE))
+    config["reminder_time"] = os.getenv("REMINDER_TIME", REMINDER_TIME)
+    config["attendance_time"] = os.getenv("ATTENDANCE_TIME", ATTENDANCE_TIME)
+    config["scheduler_interval_seconds"] = int(os.getenv("SCHEDULER_INTERVAL_SECONDS", str(SCHEDULER_INTERVAL_SECONDS)))
     return config
 
 
@@ -196,23 +348,40 @@ class BaleBot:
         return self.request("sendMessage", payload)
 
 
-class SheetSchedule:
+class WorkbookCache:
     def __init__(self, export_url):
         self.export_url = export_url
         self.loaded_at = 0
         self.cache_seconds = int(os.getenv("SHEET_CACHE_SECONDS", "300"))
         self.workbook = None
 
-    def worksheet(self):
+    def workbook_data(self):
         now = time.time()
         if self.workbook is None or now - self.loaded_at > self.cache_seconds:
             response = requests.get(self.export_url, timeout=30)
             response.raise_for_status()
             self.workbook = load_workbook(BytesIO(response.content), data_only=True)
             self.loaded_at = now
-        return self.workbook[self.workbook.sheetnames[0]]
+        return self.workbook
+
+
+class SheetSchedule:
+    def __init__(self, export_url, config=None):
+        self.config = config or {}
+        self.cache = WorkbookCache(export_url)
+
+    def worksheet(self):
+        workbook = self.cache.workbook_data()
+        return workbook[workbook.sheetnames[0]]
 
     def month_info(self):
+        year_override = config_value(self.config, "SCHEDULE_YEAR_OVERRIDE", "schedule_year_override")
+        month_override = config_value(self.config, "SCHEDULE_MONTH_OVERRIDE", "schedule_month_override")
+        if year_override and month_override:
+            month_number = int(month_override)
+            month_name = next(name for name, number in PERSIAN_MONTHS.items() if number == month_number)
+            return int(year_override), month_number, month_name
+
         ws = self.worksheet()
         title = " ".join(normalize_text(cell.value) for cell in ws[1] if cell.value)
         found_month = None
@@ -224,7 +393,7 @@ class SheetSchedule:
         year = int(year_match.group(1)) if year_match else None
         if found_month and year:
             return year, found_month[1], found_month[0]
-        current_year, current_month, _ = parse_jalali_date(os.getenv("REMINDER_DATE"))
+        current_year, current_month, _ = parse_jalali_date(self.config.get("current_jalali_date"))
         month_name = next(name for name, number in PERSIAN_MONTHS.items() if number == current_month)
         return year or current_year, current_month, month_name
 
@@ -239,7 +408,13 @@ class SheetSchedule:
 
     def schedule_for_professor(self, professor_name):
         ws = self.worksheet()
-        col = self.professor_columns().get(normalize_text(professor_name))
+        professor_name = normalize_text(professor_name)
+        schedule_year, schedule_month, _ = self.month_info()
+        columns = self.professor_columns()
+        col = columns.get(professor_name)
+        if not col:
+            compact_columns = {compact_text(name): col for name, col in columns.items()}
+            col = compact_columns.get(compact_text(professor_name))
         if not col:
             return []
         classes = []
@@ -249,16 +424,47 @@ class SheetSchedule:
             student = normalize_text(ws.cell(row, col).value)
             if not weekday or not day_number or not student or student == "*":
                 continue
-            classes.append({"weekday": weekday, "day": int(day_number), "student": student})
+            day_number = int(day_number)
+            classes.append(
+                {
+                    "weekday": jalali_weekday_name(schedule_year, schedule_month, day_number),
+                    "day": day_number,
+                    "student": student,
+                }
+            )
+        professor_key = compact_text(professor_name)
+        for item in MANUAL_TEST_CLASSES:
+            if compact_text(item.get("professor")) != professor_key:
+                continue
+            day_number = int(item["day"])
+            classes.append(
+                {
+                    "weekday": jalali_weekday_name(schedule_year, schedule_month, day_number),
+                    "day": day_number,
+                    "student": normalize_text(item.get("student")),
+                }
+            )
+        classes.sort(key=lambda item: int(item["day"]))
         return classes
 
     def schedule_for_day(self, professor_name, jalali_day):
         return [item for item in self.schedule_for_professor(professor_name) if item["day"] == int(jalali_day)]
 
 
-def professor_phone_map():
-    raw = read_json(PROFESSOR_PHONES_PATH, {})
-    return {normalize_phone(phone): normalize_text(name) for name, phone in raw.items() if normalize_phone(phone)}
+class ContactDirectory:
+    def __init__(self, export_url):
+        self.cache = WorkbookCache(export_url)
+
+    def professor_phone_map(self):
+        workbook = self.cache.workbook_data()
+        worksheet = workbook[workbook.sheetnames[0]]
+        result = {}
+        for row in worksheet.iter_rows(min_row=2, values_only=True):
+            professor = normalize_text(row[1] if len(row) > 1 else "")
+            phone = normalize_phone(row[2] if len(row) > 2 else "")
+            if professor and phone:
+                result[phone] = professor
+        return result
 
 
 def chat_registry():
@@ -305,6 +511,18 @@ def classes_keyboard():
     }
 
 
+def attendance_keyboard():
+    return {
+        "keyboard": [[{"text": ATTENDANCE_YES_TEXT}, {"text": ATTENDANCE_NO_TEXT}]],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
+    }
+
+
+def remove_keyboard():
+    return {"remove_keyboard": True}
+
+
 def format_phone(phone):
     return to_persian_digits(normalize_phone(phone))
 
@@ -319,6 +537,7 @@ def format_schedule(professor_name, schedule, schedule_reader):
             f"{index}. {item['weekday']} {to_persian_digits(item['day'])} {month_name} {to_persian_digits(year)}\n"
             f"   دانشجو: {item['student']}"
         )
+        lines.append("")
     lines.extend(["", SCHEDULE_FOOTER])
     return "\n".join(lines)
 
@@ -345,11 +564,127 @@ def format_reminder(professor_name, day_schedule, schedule_reader):
     return "\n".join(lines)
 
 
-def handle_message(bot, schedule_reader, message):
+def format_attendance_question(item):
+    return f"آیا دانشجوی {item['student']} در کلاس امروز شما حضور پیدا کرد؟"
+
+
+def pending_attendance():
+    return read_json(PENDING_ATTENDANCE_PATH, {})
+
+
+def save_pending_attendance(value):
+    write_json(PENDING_ATTENDANCE_PATH, value)
+
+
+def local_absences():
+    return read_json(ABSENCES_FALLBACK_PATH, [])
+
+
+def append_local_absence(absence):
+    items = local_absences()
+    items.append(absence)
+    write_json(ABSENCES_FALLBACK_PATH, items)
+
+
+def append_absence_to_excel(absence):
+    ABSENCES_XLSX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if ABSENCES_XLSX_PATH.exists():
+        workbook = load_workbook(ABSENCES_XLSX_PATH)
+        worksheet = workbook.active
+    else:
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "غیبت دانشجویان"
+        worksheet.append(["ردیف", "نام دانشجو", "نام استاد", "تاریخ غیبت"])
+
+    next_number = max(1, worksheet.max_row)
+    worksheet.append(
+        [
+            next_number,
+            absence["student"],
+            absence["professor"],
+            absence["date"],
+        ]
+    )
+    workbook.save(ABSENCES_XLSX_PATH)
+
+
+def append_absence_to_webhook(config, absence):
+    webhook_url = str(config.get("absence_webhook_url", "")).strip()
+    if not webhook_url:
+        return False
+    response = requests.post(
+        webhook_url,
+        json={
+            "student": absence["student"],
+            "professor": absence["professor"],
+            "date": absence["date"],
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    return True
+
+
+def record_absence(config, absence):
+    try:
+        if append_absence_to_webhook(config, absence):
+            return
+    except Exception as exc:
+        print(f"Apps Script absence write failed: {exc}")
+
+    try:
+        append_absence_to_excel(absence)
+        return
+    except Exception as exc:
+        print(f"Excel absence write failed: {exc}")
+    append_local_absence(absence)
+
+
+def ask_next_attendance_question(bot, chat_id):
+    pending = pending_attendance()
+    item = pending.get(str(chat_id), {}).get("active")
+    if not item:
+        return False
+    bot.send_message(chat_id, format_attendance_question(item), keyboard=attendance_keyboard())
+    return True
+
+
+def complete_attendance_answer(bot, config, chat_id, answer):
+    pending = pending_attendance()
+    state = pending.get(str(chat_id))
+    if not state or not state.get("active"):
+        return False
+
+    active = state["active"]
+    if answer == ATTENDANCE_NO_TEXT:
+        record_absence(config, active)
+        bot.send_message(chat_id, "غیبت دانشجو ثبت شد", keyboard=classes_keyboard())
+    else:
+        bot.send_message(chat_id, "با تشکر از شما", keyboard=classes_keyboard())
+
+    queue = state.get("queue", [])
+    if queue:
+        state["active"] = queue.pop(0)
+        state["queue"] = queue
+        pending[str(chat_id)] = state
+        save_pending_attendance(pending)
+        ask_next_attendance_question(bot, chat_id)
+    else:
+        pending.pop(str(chat_id), None)
+        save_pending_attendance(pending)
+    return True
+
+
+def handle_message(bot, config, schedule_reader, contact_directory, message):
     chat_id = (message.get("chat") or {}).get("id")
     text = normalize_text(message.get("text"))
     if chat_id is None:
         return
+
+    if text in {ATTENDANCE_YES_TEXT, ATTENDANCE_NO_TEXT}:
+        if complete_attendance_answer(bot, config, chat_id, text):
+            return
 
     registration = get_chat_registration(chat_id)
     registered_phone = registration["phone"]
@@ -396,7 +731,7 @@ def handle_message(bot, schedule_reader, message):
         )
         return
 
-    phones = professor_phone_map()
+    phones = contact_directory.professor_phone_map()
     if phone in phones:
         professor = phones[phone]
         set_chat_professor(chat_id, phone, professor)
@@ -420,7 +755,6 @@ def send_due_reminders(bot, schedule_reader, target_date=None, dry_run=False):
     sheet_year, sheet_month, _ = schedule_reader.month_info()
     if year != sheet_year or month != sheet_month:
         return []
-    sent = read_json(REMINDERS_SENT_PATH, {})
     messages = []
     for chat_id, value in chat_registry().items():
         professor = normalize_text(value.get("professor"))
@@ -430,32 +764,90 @@ def send_due_reminders(bot, schedule_reader, target_date=None, dry_run=False):
         if not day_schedule:
             continue
         key = reminder_key(chat_id, year, month, day)
-        if sent.get(key):
+        if key in REMINDERS_SENT_THIS_RUN:
             continue
         text = format_reminder(professor, day_schedule, schedule_reader)
         messages.append({"chat_id": chat_id, "professor": professor, "text": text})
         if not dry_run:
             bot.send_message(chat_id, text)
-            sent[key] = datetime.now().isoformat(timespec="seconds")
-    if messages and not dry_run:
-        write_json(REMINDERS_SENT_PATH, sent)
+            REMINDERS_SENT_THIS_RUN.add(key)
     return messages
 
 
-def reminder_loop(bot, schedule_reader):
-    hour = int(os.getenv("REMINDER_HOUR", "8"))
+def attendance_key(chat_id, year, month, day, student):
+    return f"{chat_id}:{year:04d}-{month:02d}-{day:02d}:{compact_text(student)}"
+
+
+def jalali_date_text(year, month, day):
+    month_name = next((name for name, number in PERSIAN_MONTHS.items() if number == month), str(month))
+    month_text = to_persian_digits(f"{month:02d}")
+    day_text = to_persian_digits(f"{day:02d}")
+    return f"{to_persian_digits(year)}/{month_text}/{day_text} - {month_name}"
+
+
+def send_due_attendance_questions(bot, schedule_reader, target_date=None, dry_run=False):
+    year, month, day = parse_jalali_date(target_date)
+    sheet_year, sheet_month, _ = schedule_reader.month_info()
+    if year != sheet_year or month != sheet_month:
+        return []
+
+    pending = pending_attendance()
+    messages = []
+
+    for chat_id, value in chat_registry().items():
+        if str(chat_id) in pending:
+            continue
+        professor = normalize_text(value.get("professor"))
+        if not professor:
+            continue
+        day_schedule = schedule_reader.schedule_for_day(professor, day)
+        question_items = []
+        for item in day_schedule:
+            key = attendance_key(chat_id, year, month, day, item["student"])
+            if key in ATTENDANCE_SENT_THIS_RUN:
+                continue
+            absence_item = {
+                "professor": professor,
+                "student": item["student"],
+                "date": jalali_date_text(year, month, day),
+                "key": key,
+            }
+            question_items.append(absence_item)
+        if not question_items:
+            continue
+        messages.extend({"chat_id": chat_id, **item} for item in question_items)
+        if not dry_run:
+            pending[str(chat_id)] = {"active": question_items[0], "queue": question_items[1:]}
+            bot.send_message(chat_id, format_attendance_question(question_items[0]), keyboard=attendance_keyboard())
+            for item in question_items:
+                ATTENDANCE_SENT_THIS_RUN.add(item["key"])
+
+    if messages and not dry_run:
+        save_pending_attendance(pending)
+    return messages
+
+
+def reminder_loop(bot, config, schedule_reader):
+    reminder_time = config.get("reminder_time", "09:00")
+    attendance_time = config.get("attendance_time", "21:00")
+    target_date = config.get("current_jalali_date")
+    interval_seconds = int(config.get("scheduler_interval_seconds", SCHEDULER_INTERVAL_SECONDS))
     while True:
-        if datetime.now().hour >= hour:
-            send_due_reminders(bot, schedule_reader)
-        time.sleep(300)
+        now = datetime.now()
+        if time_matches(now, reminder_time):
+            send_due_reminders(bot, schedule_reader, target_date=target_date)
+        if time_matches(now, attendance_time):
+            send_due_attendance_questions(bot, schedule_reader, target_date=target_date)
+        time.sleep(interval_seconds)
 
 
 def run():
     config = load_config()
     start_health_server()
     bot = BaleBot(config)
-    schedule_reader = SheetSchedule(config["sheet_export_url"])
-    Thread(target=reminder_loop, args=(bot, schedule_reader), daemon=True).start()
+    schedule_reader = SheetSchedule(config["sheet_export_url"], config)
+    contact_directory = ContactDirectory(config["contacts_export_url"])
+    Thread(target=reminder_loop, args=(bot, config, schedule_reader), daemon=True).start()
     print("Ostad Yar bot is running. Press Ctrl+C to stop.")
     while True:
         try:
@@ -466,7 +858,7 @@ def run():
                     bot.offset = int(update_id) + 1
                 message = update.get("message")
                 if message:
-                    handle_message(bot, schedule_reader, message)
+                    handle_message(bot, config, schedule_reader, contact_directory, message)
         except KeyboardInterrupt:
             print("\nBot stopped.")
             break
@@ -480,8 +872,8 @@ def run():
 
 def preview_schedule(args):
     config = load_config()
-    reader = SheetSchedule(config["sheet_export_url"])
-    professor = professor_phone_map().get(normalize_phone(args.phone))
+    reader = SheetSchedule(config["sheet_export_url"], config)
+    professor = ContactDirectory(config["contacts_export_url"]).professor_phone_map().get(normalize_phone(args.phone))
     if not professor:
         print(INVALID_PHONE_MESSAGE)
         return
@@ -490,9 +882,9 @@ def preview_schedule(args):
 
 def preview_reminders(args):
     config = load_config()
-    reader = SheetSchedule(config["sheet_export_url"])
+    reader = SheetSchedule(config["sheet_export_url"], config)
     if args.phone:
-        professor = professor_phone_map().get(normalize_phone(args.phone))
+        professor = ContactDirectory(config["contacts_export_url"]).professor_phone_map().get(normalize_phone(args.phone))
         if not professor:
             print(INVALID_PHONE_MESSAGE)
             return
@@ -514,6 +906,19 @@ def preview_reminders(args):
         print("-" * 30)
 
 
+def preview_attendance(args):
+    config = load_config()
+    reader = SheetSchedule(config["sheet_export_url"], config)
+    messages = send_due_attendance_questions(None, reader, target_date=args.date, dry_run=True)
+    if not messages:
+        print("No attendance questions found for this date.")
+        return
+    for message in messages:
+        print(f"CHAT_ID: {message['chat_id']}")
+        print(format_attendance_question(message))
+        print("-" * 30)
+
+
 def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
@@ -522,11 +927,15 @@ def main():
     reminder_parser = subparsers.add_parser("test-reminders")
     reminder_parser.add_argument("--date", required=True, help="Jalali date, for example 1405-04-01")
     reminder_parser.add_argument("--phone", help="Optional professor phone for testing before Bale login")
+    attendance_parser = subparsers.add_parser("test-attendance")
+    attendance_parser.add_argument("--date", required=True, help="Jalali date, for example 1405-04-01")
     args = parser.parse_args()
     if args.command == "preview-schedule":
         preview_schedule(args)
     elif args.command == "test-reminders":
         preview_reminders(args)
+    elif args.command == "test-attendance":
+        preview_attendance(args)
     else:
         run()
 

@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .env
 config.local.json
+data/absences.xlsx
+data/absences_fallback.json
+data/pending_attendance.json
+data/reminders_sent.json
+data/attendance_sent.json

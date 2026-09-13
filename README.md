@@ -5,20 +5,29 @@ Bot link: https://ble.ir/Ostad_YarBot
 The bot uses the Google Sheet as the live schedule database:
 
 ```text
-https://docs.google.com/spreadsheets/d/1sDIbSkFHlgsqxrYZyK2diG53eh4LT09h/export?format=xlsx
+https://docs.google.com/spreadsheets/d/1jwQ-2k6zbOGLTgPjSpOXGvnlBRWm70Mk/export?format=xlsx
+```
+
+For local testing, this populated sheet is still used as the default schedule source. The empty production schedule sheet can be used later by setting `SHEET_EXPORT_URL`.
+
+Professor phone numbers and absence records use this spreadsheet:
+
+```text
+https://docs.google.com/spreadsheets/d/1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/export?format=xlsx
 ```
 
 ## Professor Flow
 
 1. Professor sends `/start`.
 2. Bot asks for mobile number.
-3. Bot checks the number in `data/professor_phones.json`.
+3. Bot checks the number in the `شماره تماس اساتید` sheet.
 4. If the number exists, the bot stores one professor phone against the Bale `chat_id` in `data/chat_ids.json`.
 5. A chat ID cannot change to another professor phone. If another number is sent later, the bot rejects it and shows the saved number.
 6. Bot reads the Google Sheet and sends only that professor's student schedule.
 7. Empty cells and `*` cells are skipped.
 8. After login, the bot shows one button for viewing the class schedule again.
-9. On class day, the bot sends a morning reminder to that professor's saved chat ID.
+9. On class day, the bot sends a morning reminder to that professor's saved chat ID at 9 AM.
+10. At 9 PM, the bot asks whether the student attended class. If the answer is `خیر`, the absence is written to `data/absences.xlsx`.
 
 ## Run Locally
 
@@ -42,33 +51,49 @@ PORT=8000
 Optional:
 
 ```text
-SHEET_EXPORT_URL=https://docs.google.com/spreadsheets/d/1sDIbSkFHlgsqxrYZyK2diG53eh4LT09h/export?format=xlsx
+SHEET_EXPORT_URL=https://docs.google.com/spreadsheets/d/1jwQ-2k6zbOGLTgPjSpOXGvnlBRWm70Mk/export?format=xlsx
+CONTACTS_EXPORT_URL=https://docs.google.com/spreadsheets/d/1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/export?format=xlsx
 API_BASE_URL=https://tapi.bale.ai/bot
 POLL_TIMEOUT_SECONDS=25
 SHEET_CACHE_SECONDS=300
-REMINDER_HOUR=8
 DATA_DIR=/app/data
+ABSENCE_WEBHOOK_URL=https://script.google.com/macros/s/AKfycbw6Mn9mGMjkUsQKaLRiY6MDV22Xc6jtWB4BPpzJo3vQk7rvr1wC6h-ZfQQwD89FECo/exec
 ```
+
+To change the schedule month/year and reminder times, edit the settings at the top of `bot.py`:
+
+```python
+SCHEDULE_YEAR_OVERRIDE = ""
+SCHEDULE_MONTH_OVERRIDE = ""
+CURRENT_JALALI_DATE_OVERRIDE = ""
+REMINDER_TIME = "03:39"
+ATTENDANCE_TIME = "03:40"
+SCHEDULER_INTERVAL_SECONDS = 15
+```
+
+Leave `SCHEDULE_YEAR_OVERRIDE` and `SCHEDULE_MONTH_OVERRIDE` empty to read month/year from the class sheet title. `REMINDER_TIME` controls the morning reminder. `ATTENDANCE_TIME` controls the attendance question. Use `HH:MM`, for example `14:35`.
 
 Keep Hamravesh replicas at `1`, because the Bale polling bot must not run twice.
 
-## Edit Professor Phone Numbers
-
-Edit:
+Absences are saved to the Apps Script webhook first:
 
 ```text
-data/professor_phones.json
+ABSENCE_WEBHOOK_URL
 ```
 
-The names must match the professor names in row 2 of the Google Sheet.
+If that write fails, the bot saves locally in:
 
-Example:
-
-```json
-{
-  "دکتر امیر محمد آرمانیان": "09133881014"
-}
+```text
+data/absences.xlsx
 ```
+
+The file uses this format:
+
+```text
+ردیف | نام دانشجو | نام استاد | تاریخ غیبت
+```
+
+The bot still contains fallback code for Google Sheet writes, but local Excel is the primary save path now.
 
 ## Test Schedule Parsing
 
@@ -94,6 +119,12 @@ You can also test one professor before they log in to Bale:
 
 ```powershell
 python bot.py test-reminders --date 1405-04-06 --phone 09133881014
+```
+
+Preview the 9 PM attendance questions:
+
+```powershell
+python bot.py test-attendance --date 1405-04-06
 ```
 
 ## Deploy Update
