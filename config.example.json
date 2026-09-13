@@ -4,5 +4,6 @@
   "sheet_export_url": "https://docs.google.com/spreadsheets/d/1jwQ-2k6zbOGLTgPjSpOXGvnlBRWm70Mk/export?format=xlsx",
   "contacts_export_url": "https://docs.google.com/spreadsheets/d/1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/export?format=xlsx",
   "absence_webhook_url": "https://script.google.com/macros/s/AKfycbw6Mn9mGMjkUsQKaLRiY6MDV22Xc6jtWB4BPpzJo3vQk7rvr1wC6h-ZfQQwD89FECo/exec",
+  "bot_timezone": "Asia/Tehran",
   "note": "Schedule month/year and reminder/attendance times are set at the top of bot.py"
 }

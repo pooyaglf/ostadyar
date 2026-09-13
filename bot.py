@@ -6,11 +6,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timezone as datetime_timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from threading import Thread
+from zoneinfo import ZoneInfo
 
 import requests
 from openpyxl import Workbook
@@ -36,6 +37,7 @@ CURRENT_JALALI_DATE_OVERRIDE = ""
 REMINDER_TIME = "09:00"
 ATTENDANCE_TIME = "21:00"
 SCHEDULER_INTERVAL_SECONDS = 15
+BOT_TIMEZONE = "Asia/Tehran"
 MANUAL_TEST_CLASSES = []
 
 DEFAULT_SHEET_EXPORT_URL = (
@@ -272,6 +274,22 @@ def time_matches(now, value):
     return now.hour == hour and now.minute == minute
 
 
+def get_bot_timezone(timezone_name):
+    timezone_name = str(timezone_name or BOT_TIMEZONE).strip() or BOT_TIMEZONE
+    try:
+        return ZoneInfo(timezone_name)
+    except Exception as exc:
+        if timezone_name == "Asia/Tehran":
+            print(f"Timezone data for {timezone_name} is unavailable, using fixed +03:30 offset: {exc}")
+            return datetime_timezone(timedelta(hours=3, minutes=30), timezone_name)
+        print(f"Timezone data for {timezone_name} is unavailable, using UTC: {exc}")
+        return datetime_timezone.utc
+
+
+def timezone_label(timezone):
+    return getattr(timezone, "key", str(timezone))
+
+
 def load_config():
     config = read_json(CONFIG_PATH, {})
     token = os.getenv("BOT_TOKEN", config.get("bot_token", "")).strip()
@@ -295,6 +313,7 @@ def load_config():
     config["reminder_time"] = os.getenv("REMINDER_TIME", REMINDER_TIME)
     config["attendance_time"] = os.getenv("ATTENDANCE_TIME", ATTENDANCE_TIME)
     config["scheduler_interval_seconds"] = int(os.getenv("SCHEDULER_INTERVAL_SECONDS", str(SCHEDULER_INTERVAL_SECONDS)))
+    config["bot_timezone"] = os.getenv("BOT_TIMEZONE", BOT_TIMEZONE)
     return config
 
 
@@ -832,8 +851,14 @@ def reminder_loop(bot, config, schedule_reader):
     attendance_time = config.get("attendance_time", "21:00")
     target_date = config.get("current_jalali_date")
     interval_seconds = int(config.get("scheduler_interval_seconds", SCHEDULER_INTERVAL_SECONDS))
+    timezone = get_bot_timezone(config.get("bot_timezone", BOT_TIMEZONE))
+    print(
+        "Scheduler is using "
+        f"{timezone_label(timezone)}; now={datetime.now(timezone).strftime('%Y-%m-%d %H:%M:%S')}; "
+        f"reminder={reminder_time}; attendance={attendance_time}; interval={interval_seconds}s"
+    )
     while True:
-        now = datetime.now()
+        now = datetime.now(timezone)
         if time_matches(now, reminder_time):
             send_due_reminders(bot, schedule_reader, target_date=target_date)
         if time_matches(now, attendance_time):

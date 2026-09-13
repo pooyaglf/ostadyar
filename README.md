@@ -58,6 +58,7 @@ POLL_TIMEOUT_SECONDS=25
 SHEET_CACHE_SECONDS=300
 DATA_DIR=/app/data
 ABSENCE_WEBHOOK_URL=https://script.google.com/macros/s/AKfycbw6Mn9mGMjkUsQKaLRiY6MDV22Xc6jtWB4BPpzJo3vQk7rvr1wC6h-ZfQQwD89FECo/exec
+BOT_TIMEZONE=Asia/Tehran
 ```
 
 To change the schedule month/year and reminder times, edit the settings at the top of `bot.py`:
@@ -66,12 +67,13 @@ To change the schedule month/year and reminder times, edit the settings at the t
 SCHEDULE_YEAR_OVERRIDE = ""
 SCHEDULE_MONTH_OVERRIDE = ""
 CURRENT_JALALI_DATE_OVERRIDE = ""
-REMINDER_TIME = "03:39"
-ATTENDANCE_TIME = "03:40"
+REMINDER_TIME = "09:00"
+ATTENDANCE_TIME = "21:00"
 SCHEDULER_INTERVAL_SECONDS = 15
+BOT_TIMEZONE = "Asia/Tehran"
 ```
 
-Leave `SCHEDULE_YEAR_OVERRIDE` and `SCHEDULE_MONTH_OVERRIDE` empty to read month/year from the class sheet title. `REMINDER_TIME` controls the morning reminder. `ATTENDANCE_TIME` controls the attendance question. Use `HH:MM`, for example `14:35`.
+Leave `SCHEDULE_YEAR_OVERRIDE` and `SCHEDULE_MONTH_OVERRIDE` empty to read month/year from the class sheet title. `REMINDER_TIME` controls the morning reminder. `ATTENDANCE_TIME` controls the attendance question. Use `HH:MM`, for example `14:35`. `BOT_TIMEZONE` makes those times independent of the server timezone.
 
 Keep Hamravesh replicas at `1`, because the Bale polling bot must not run twice.
 
