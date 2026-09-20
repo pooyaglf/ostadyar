@@ -3,7 +3,7 @@
   "poll_timeout_seconds": 25,
   "sheet_export_url": "https://docs.google.com/spreadsheets/d/1jwQ-2k6zbOGLTgPjSpOXGvnlBRWm70Mk/export?format=xlsx",
   "contacts_export_url": "https://docs.google.com/spreadsheets/d/1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/export?format=xlsx",
-  "absence_webhook_url": "https://script.google.com/macros/s/AKfycbw6Mn9mGMjkUsQKaLRiY6MDV22Xc6jtWB4BPpzJo3vQk7rvr1wC6h-ZfQQwD89FECo/exec",
+  "absence_webhook_url": "https://script.google.com/macros/s/AKfycbwnjF9SHN--LO5pyAhk6ToENYK09WFaTvtUu1UkMFrhKcS5x9O3Xxdb_uOxIClZ4Y2Qhw/exec",
   "bot_timezone": "Asia/Tehran",
   "note": "Schedule month/year and reminder/attendance times are set at the top of bot.py"
 }

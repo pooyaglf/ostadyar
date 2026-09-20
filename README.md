@@ -21,7 +21,7 @@ https://docs.google.com/spreadsheets/d/1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/export?
 1. Professor sends `/start`.
 2. Bot asks for mobile number.
 3. Bot checks the number in the `شماره تماس اساتید` sheet.
-4. If the number exists, the bot stores one professor phone against the Bale `chat_id` in `data/chat_ids.json`.
+4. If the number exists, the bot stores one professor phone against the Bale `chat_id` in the chat registry Google Sheet.
 5. A chat ID cannot change to another professor phone. If another number is sent later, the bot rejects it and shows the saved number.
 6. Bot reads the Google Sheet and sends only that professor's student schedule.
 7. Empty cells and `*` cells are skipped.
@@ -107,7 +107,7 @@ python bot.py preview-schedule --phone 09133881014
 
 ## Test Reminder Logic
 
-First, make sure `data/chat_ids.json` contains a chat mapped to a professor. This happens automatically after the professor enters a valid phone number in Bale.
+First, make sure the chat registry Google Sheet contains a chat mapped to a professor. This happens automatically after the professor enters a valid phone number in Bale.
 
 Then preview reminders for a Jalali date:
 
