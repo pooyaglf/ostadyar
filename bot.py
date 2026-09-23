@@ -90,12 +90,14 @@ STUDENT_SECTION_MESSAGE = "این بخش در حال توسعه است"
 INVALID_PHONE_MESSAGE = "با عرض معذرت شماره ی شما ثبت نشده است"
 CONTACT_REQUIRED_MESSAGE = "لطفا شماره را به صورت دستی وارد نکنید و از دکمه اشتراک گذاری شماره همراه استفاده نمایید."
 CONTACT_OWNER_MISMATCH_MESSAGE = "لطفا فقط شماره همراه حساب بله خودتان را با دکمه اشتراک گذاری ارسال نمایید."
+PROCESSING_MESSAGE = "در حال پردازش اطلاعات، لطفا چند لحظه صبر بفرمایید..."
 SHARE_CONTACT_TEXT = "📱 اشتراک‌گذاری شماره همراه"
 ROLE_STUDENT_TEXT = "دانشجو"
 ROLE_PROFESSOR_TEXT = "استاد"
 RESELECT_ROLE_TEXT = "انتخاب مجدد نقش"
 SCHEDULE_FOOTER = "برنامه ی کلاس های شما به شکل بالا است و در روز کلاس برای شما یک پیام یاداوری ارسال خواهد شد"
 VIEW_CLASSES_TEXT = "برنامه ماهانه کلینیک ویژه من"
+TODAY_ATTENDANCE_TEXT = "دریافت حضور و غیاب امروز"
 ATTENDANCE_ABSENT_TEXT = "غیبت"
 ATTENDANCE_WEAK_TEXT = "ضعیف"
 ATTENDANCE_MEDIUM_TEXT = "متوسط"
@@ -458,6 +460,10 @@ class BaleBot:
             payload["reply_markup"] = keyboard
         return self.request("sendMessage", payload)
 
+    def delete_message(self, chat_id, message_id):
+        payload = {"chat_id": normalize_id(chat_id), "message_id": message_id}
+        return self.request("deleteMessage", payload)
+
     def answer_callback_query(self, callback_query_id, text=None):
         payload = {"callback_query_id": callback_query_id}
         if text:
@@ -626,12 +632,31 @@ def get_chat_registration(chat_id):
     }
 
 
-def classes_keyboard():
+def classes_keyboard(show_today_attendance=False):
+    row = [{"text": VIEW_CLASSES_TEXT}]
+    if show_today_attendance:
+        row.append({"text": TODAY_ATTENDANCE_TEXT})
     return {
-        "keyboard": [[{"text": VIEW_CLASSES_TEXT}]],
+        "keyboard": [row],
         "resize_keyboard": True,
         "one_time_keyboard": False,
     }
+
+
+def current_schedule_date(config):
+    return parse_jalali_date(config.get("current_jalali_date"))
+
+
+def professor_has_class_today(config, schedule_reader, professor):
+    year, month, day = current_schedule_date(config)
+    sheet_year, sheet_month, _ = schedule_reader.month_info()
+    if year != sheet_year or month != sheet_month:
+        return False
+    return bool(schedule_reader.schedule_for_day(professor, day))
+
+
+def professor_keyboard(config, schedule_reader, professor):
+    return classes_keyboard(professor_has_class_today(config, schedule_reader, professor))
 
 
 def role_keyboard():
@@ -681,6 +706,27 @@ def format_phone(phone):
     return to_persian_digits(normalize_phone(phone))
 
 
+def sent_message_id(response):
+    result = response.get("result") if isinstance(response, dict) else None
+    if isinstance(result, dict):
+        return result.get("message_id")
+    return None
+
+
+def send_processing_message(bot, chat_id):
+    return bot.send_message(chat_id, PROCESSING_MESSAGE)
+
+
+def delete_processing_message(bot, chat_id, response):
+    message_id = sent_message_id(response)
+    if not message_id:
+        return
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception as exc:
+        print(f"Processing message delete failed: {exc}")
+
+
 def format_schedule(professor_name, schedule, schedule_reader):
     year, _, month_name = schedule_reader.month_info()
     if not schedule:
@@ -721,7 +767,7 @@ def format_reminder(professor_name, day_schedule, schedule_reader):
 def format_attendance_question(item):
     return (
         "با عرض سلام و خسته نباشید خدمت استاد گرامی\n"
-        f"اینترن امروز شما دکتر {item['student']} بوده است .\n"
+        f"اینترن تاریخ {item['date']} شما دکتر {item['student']} بوده است .\n"
         "در صورت عدم حضور دکمه ی غیبت و در صورت حضور عملکرد ایشان را ارزیابی و انتخاب بفرمایید :"
     )
 
@@ -859,7 +905,7 @@ ATTENDANCE_STATUS_BY_CODE = {
 }
 
 
-def complete_attendance_callback(bot, config, chat_id, attendance_id, status):
+def complete_attendance_callback(bot, config, schedule_reader, chat_id, attendance_id, status):
     chat_id = normalize_id(chat_id)
     pending = pending_attendance()
     state = pending.get(chat_id, {})
@@ -870,10 +916,11 @@ def complete_attendance_callback(bot, config, chat_id, attendance_id, status):
 
     active["status"] = status
     record_absence(config, active)
+    keyboard = professor_keyboard(config, schedule_reader, active["professor"])
     if status == ATTENDANCE_ABSENT_TEXT:
-        bot.send_message(chat_id, "غیبت دانشجو ثبت شد با تشکر", keyboard=classes_keyboard())
+        bot.send_message(chat_id, "غیبت دانشجو ثبت شد با تشکر", keyboard=keyboard)
     else:
-        bot.send_message(chat_id, "عملکرد اینترن شما ثبت شد با تشکر", keyboard=classes_keyboard())
+        bot.send_message(chat_id, "عملکرد اینترن شما ثبت شد با تشکر", keyboard=keyboard)
 
     items.pop(attendance_id, None)
     try:
@@ -888,7 +935,7 @@ def complete_attendance_callback(bot, config, chat_id, attendance_id, status):
     return True
 
 
-def handle_callback_query(bot, config, callback_query):
+def handle_callback_query(bot, config, schedule_reader, callback_query):
     data = str(callback_query.get("data") or "")
     message = callback_query.get("message") or {}
     chat_id = (message.get("chat") or {}).get("id")
@@ -902,9 +949,14 @@ def handle_callback_query(bot, config, callback_query):
     status = ATTENDANCE_STATUS_BY_CODE.get(answer_code)
     if not status:
         return
-    if complete_attendance_callback(bot, config, chat_id, attendance_id, status):
+    if complete_attendance_callback(bot, config, schedule_reader, chat_id, attendance_id, status):
         return
-    bot.send_message(chat_id, "این مورد قبلا ثبت شده", keyboard=classes_keyboard())
+    registration = get_chat_registration(chat_id)
+    bot.send_message(
+        chat_id,
+        "این مورد قبلا ثبت شده",
+        keyboard=professor_keyboard(config, schedule_reader, registration["professor"]),
+    )
 
 
 def handle_message(bot, config, schedule_reader, contact_directory, message):
@@ -939,11 +991,43 @@ def handle_message(bot, config, schedule_reader, contact_directory, message):
 
     if text == VIEW_CLASSES_TEXT:
         if registered_phone and registered_professor:
+            processing_message = send_processing_message(bot, chat_id)
             schedule = schedule_reader.schedule_for_professor(registered_professor)
+            delete_processing_message(bot, chat_id, processing_message)
             bot.send_message(
                 chat_id,
                 format_login_schedule(registered_professor, schedule, schedule_reader),
-                keyboard=classes_keyboard(),
+                keyboard=professor_keyboard(config, schedule_reader, registered_professor),
+            )
+            return
+        bot.send_message(chat_id, START_MESSAGE, keyboard=role_keyboard())
+        return
+
+    if text == TODAY_ATTENDANCE_TEXT:
+        if registered_phone and registered_professor:
+            processing_message = send_processing_message(bot, chat_id)
+            if professor_has_class_today(config, schedule_reader, registered_professor):
+                messages = send_attendance_questions_for_professor(
+                    bot,
+                    config,
+                    schedule_reader,
+                    chat_id,
+                    registered_professor,
+                    target_date=config.get("current_jalali_date"),
+                )
+                delete_processing_message(bot, chat_id, processing_message)
+                if not messages:
+                    bot.send_message(
+                        chat_id,
+                        "حضور و غیاب امروز قبلا ارسال شده است.",
+                        keyboard=professor_keyboard(config, schedule_reader, registered_professor),
+                    )
+                return
+            delete_processing_message(bot, chat_id, processing_message)
+            bot.send_message(
+                chat_id,
+                "برای امروز کلاسی ثبت نشده است.",
+                keyboard=professor_keyboard(config, schedule_reader, registered_professor),
             )
             return
         bot.send_message(chat_id, START_MESSAGE, keyboard=role_keyboard())
@@ -954,26 +1038,30 @@ def handle_message(bot, config, schedule_reader, contact_directory, message):
             bot.send_message(
                 chat_id,
                 REGISTERED_PHONE_MESSAGE.format(phone=format_phone(registered_phone)),
-                keyboard=classes_keyboard(),
+                keyboard=professor_keyboard(config, schedule_reader, registered_professor),
             )
             return
+        processing_message = send_processing_message(bot, chat_id)
         schedule = schedule_reader.schedule_for_professor(registered_professor)
+        delete_processing_message(bot, chat_id, processing_message)
         bot.send_message(
             chat_id,
             format_login_schedule(registered_professor, schedule, schedule_reader),
-            keyboard=classes_keyboard(),
+            keyboard=professor_keyboard(config, schedule_reader, registered_professor),
         )
         return
 
+    processing_message = send_processing_message(bot, chat_id) if contact_phone else None
     phones = contact_directory.professor_phone_map()
     if contact_phone in phones:
         professor = phones[contact_phone]
         set_chat_professor(chat_id, contact_phone, professor)
         schedule = schedule_reader.schedule_for_professor(professor)
+        delete_processing_message(bot, chat_id, processing_message)
         bot.send_message(
             chat_id,
             format_login_schedule(professor, schedule, schedule_reader),
-            keyboard=classes_keyboard(),
+            keyboard=professor_keyboard(config, schedule_reader, professor),
         )
         return
 
@@ -981,6 +1069,7 @@ def handle_message(bot, config, schedule_reader, contact_directory, message):
         bot.send_message(chat_id, CONTACT_REQUIRED_MESSAGE, keyboard=role_keyboard())
         return
 
+    delete_processing_message(bot, chat_id, processing_message)
     bot.send_message(chat_id, INVALID_PHONE_MESSAGE, keyboard=contact_keyboard())
 
 
@@ -1033,7 +1122,7 @@ def monthly_schedule_key(chat_id, year, month, day, hour, minute):
     return f"{chat_id}:{year:04d}-{month:02d}-{day:02d}:{hour:02d}:{minute:02d}"
 
 
-def send_due_monthly_schedules(bot, schedule_reader, send_at, now, dry_run=False):
+def send_due_monthly_schedules(bot, config, schedule_reader, send_at, now, dry_run=False):
     parsed = parse_jalali_datetime(send_at)
     if not parsed:
         return []
@@ -1054,7 +1143,7 @@ def send_due_monthly_schedules(bot, schedule_reader, send_at, now, dry_run=False
         text = format_login_schedule(professor, schedule, schedule_reader)
         messages.append({"chat_id": chat_id, "professor": professor, "text": text})
         if not dry_run:
-            bot.send_message(chat_id, text, keyboard=classes_keyboard())
+            bot.send_message(chat_id, text, keyboard=professor_keyboard(config, schedule_reader, professor))
             MONTHLY_SCHEDULE_SENT_THIS_RUN.add(key)
     return messages
 
@@ -1065,10 +1154,62 @@ def attendance_key(chat_id, year, month, day, student):
 
 
 def jalali_date_text(year, month, day):
-    month_name = next((name for name, number in PERSIAN_MONTHS.items() if number == month), str(month))
     month_text = to_persian_digits(f"{month:02d}")
     day_text = to_persian_digits(f"{day:02d}")
-    return f"{to_persian_digits(year)}/{month_text}/{day_text} - {month_name}"
+    return f"{to_persian_digits(year)}/{month_text}/{day_text}"
+
+
+def send_attendance_questions_for_professor(
+    bot,
+    config,
+    schedule_reader,
+    chat_id,
+    professor,
+    target_date=None,
+    pending=None,
+    dry_run=False,
+):
+    year, month, day = parse_jalali_date(target_date)
+    sheet_year, sheet_month, _ = schedule_reader.month_info()
+    if year != sheet_year or month != sheet_month:
+        return []
+
+    chat_id = normalize_id(chat_id)
+    professor = normalize_text(professor)
+    pending = pending if pending is not None else pending_attendance()
+    state = pending.get(chat_id, {})
+    pending_items = state.get("items", {})
+    day_schedule = schedule_reader.schedule_for_day(professor, day)
+    messages = []
+
+    for item in day_schedule:
+        key = attendance_key(chat_id, year, month, day, item["student"])
+        if key in ATTENDANCE_SENT_THIS_RUN or key in pending_items:
+            continue
+        absence_item = {
+            "professor": professor,
+            "student": item["student"],
+            "date": jalali_date_text(year, month, day),
+            "key": key,
+        }
+        messages.append({"chat_id": chat_id, **absence_item})
+        if dry_run:
+            continue
+        pending_items[key] = absence_item
+        try:
+            upsert_pending_attendance(chat_id, absence_item)
+        except Exception as exc:
+            print(f"Pending attendance sheet write failed, using local JSON fallback: {exc}")
+        bot.send_message(
+            chat_id,
+            format_attendance_question(absence_item),
+            keyboard=attendance_inline_keyboard(key),
+        )
+        ATTENDANCE_SENT_THIS_RUN.add(key)
+
+    if pending_items:
+        pending[chat_id] = {"items": pending_items}
+    return messages
 
 
 def send_due_attendance_questions(bot, schedule_reader, target_date=None, dry_run=False):
@@ -1084,40 +1225,18 @@ def send_due_attendance_questions(bot, schedule_reader, target_date=None, dry_ru
         professor = normalize_text(value.get("professor"))
         if not professor:
             continue
-        day_schedule = schedule_reader.schedule_for_day(professor, day)
-        question_items = []
-        for item in day_schedule:
-            key = attendance_key(chat_id, year, month, day, item["student"])
-            if key in ATTENDANCE_SENT_THIS_RUN:
-                continue
-            absence_item = {
-                "professor": professor,
-                "student": item["student"],
-                "date": jalali_date_text(year, month, day),
-                "key": key,
-            }
-            question_items.append(absence_item)
-        if not question_items:
-            continue
-        messages.extend({"chat_id": chat_id, **item} for item in question_items)
-        if not dry_run:
-            chat_id = normalize_id(chat_id)
-            state = pending.get(chat_id, {})
-            items = state.get("items", {})
-            for item in question_items:
-                items[item["key"]] = item
-                try:
-                    upsert_pending_attendance(chat_id, item)
-                except Exception as exc:
-                    print(f"Pending attendance sheet write failed, using local JSON fallback: {exc}")
-                bot.send_message(
-                    chat_id,
-                    format_attendance_question(item),
-                    keyboard=attendance_inline_keyboard(item["key"]),
-                )
-            pending[chat_id] = {"items": items}
-            for item in question_items:
-                ATTENDANCE_SENT_THIS_RUN.add(item["key"])
+        messages.extend(
+            send_attendance_questions_for_professor(
+                bot,
+                {},
+                schedule_reader,
+                chat_id,
+                professor,
+                target_date=target_date,
+                pending=pending,
+                dry_run=dry_run,
+            )
+        )
 
     return messages
 
@@ -1138,7 +1257,7 @@ def reminder_loop(bot, config, schedule_reader):
     while True:
         try:
             now = datetime.now(timezone)
-            send_due_monthly_schedules(bot, schedule_reader, monthly_schedule_send_at, now)
+            send_due_monthly_schedules(bot, config, schedule_reader, monthly_schedule_send_at, now)
             if time_matches(now, reminder_time):
                 send_due_reminders(bot, schedule_reader, target_date=target_date)
             if time_matches(now, attendance_time):
@@ -1168,7 +1287,7 @@ def run():
                     handle_message(bot, config, schedule_reader, contact_directory, message)
                 callback_query = update.get("callback_query")
                 if callback_query:
-                    handle_callback_query(bot, config, callback_query)
+                    handle_callback_query(bot, config, schedule_reader, callback_query)
         except KeyboardInterrupt:
             print("\nBot stopped.")
             break
