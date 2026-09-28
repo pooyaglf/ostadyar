@@ -27,6 +27,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 CONFIG_PATH = BASE_DIR / "config.local.json"
 ABSENCES_FALLBACK_PATH = Path(os.getenv("ABSENCES_FALLBACK_PATH", DATA_DIR / "absences_fallback.json"))
 ABSENCES_XLSX_PATH = Path(os.getenv("ABSENCES_XLSX_PATH", DATA_DIR / "absences.xlsx"))
+TEST_CHAT_REGISTRY_PATH = Path(os.getenv("TEST_CHAT_REGISTRY_PATH", BASE_DIR / "test_chat_registry.json"))
 
 # Main operational settings. Change these values, then restart the bot.
 # Leave these empty to read year/month from the class sheet title.
@@ -34,10 +35,14 @@ SCHEDULE_YEAR_OVERRIDE = ""
 SCHEDULE_MONTH_OVERRIDE = ""
 CURRENT_JALALI_DATE_OVERRIDE = ""
 REMINDER_TIME = "09:00"
+REMINDER_WINDOW_MINUTES = 15
 ATTENDANCE_TIME = "21:00"
+ATTENDANCE_WINDOW_MINUTES = 30
 MONTHLY_SCHEDULE_SEND_AT = "1405/07/03 09:00"
 SCHEDULER_INTERVAL_SECONDS = 15
 BOT_TIMEZONE = "Asia/Tehran"
+SHEET_ACTION_RETRY_ATTEMPTS = 4
+SHEET_ACTION_RETRY_DELAY_SECONDS = 10
 MANUAL_TEST_CLASSES = []
 
 DEFAULT_SHEET_EXPORT_URL = (
@@ -71,6 +76,14 @@ DEFAULT_PENDING_ATTENDANCE_EXPORT_URL = (
 DEFAULT_PENDING_ATTENDANCE_WEBHOOK_URL = (
     "https://script.google.com/macros/s/"
     "AKfycbwbcqnm9HaxmBIwoY0V4lfAHFZQ_wasGCfWL_QJh4vg3RmNLIZF1vSlHzQwzPfuymHk/exec"
+)
+DEFAULT_ATTENDANCE_LOG_EXPORT_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1x45n5nnYM1GP5E527CDx5yuZ46A_sVCcPgUqdtMhEro/export?format=xlsx"
+)
+DEFAULT_ATTENDANCE_LOG_WEBHOOK_URL = (
+    "https://script.google.com/macros/s/"
+    "AKfycbwJ0YFWJkVQhDTdvclLGnj0FNE_oCTYivJJnzgmuhQajBPcsQy5Ygf-TG8wER3XKYT0Bw/exec"
 )
 START_MESSAGE = (
     "با عرض سلام و احترام\n"
@@ -194,6 +207,25 @@ def post_sheet_action(webhook_url, payload):
     if not result.get("ok"):
         raise RuntimeError(result.get("error") or "Google Sheet webhook returned ok=false")
     return result
+
+
+def post_sheet_action_with_retry(webhook_url, payload, attempts=None, delay_seconds=None):
+    attempts = int(attempts or SHEET_ACTION_RETRY_ATTEMPTS)
+    delay_seconds = int(delay_seconds or SHEET_ACTION_RETRY_DELAY_SECONDS)
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return post_sheet_action(webhook_url, payload)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            print(
+                "Google Sheet write failed "
+                f"(attempt {attempt}/{attempts}); retrying in {delay_seconds}s: {exc}"
+            )
+            time.sleep(delay_seconds)
+    raise last_error
 
 
 def normalize_text(value):
@@ -367,6 +399,13 @@ def time_matches(now, value):
     return now.hour == hour and now.minute == minute
 
 
+def time_is_in_window(now, start_value, window_minutes):
+    hour, minute = parse_time(start_value, "00:00")
+    start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    end = start + timedelta(minutes=int(window_minutes))
+    return start <= now < end
+
+
 def get_bot_timezone(timezone_name):
     timezone_name = str(timezone_name or BOT_TIMEZONE).strip() or BOT_TIMEZONE
     try:
@@ -404,7 +443,9 @@ def load_config():
     config["schedule_year_override"] = os.getenv("SCHEDULE_YEAR_OVERRIDE", str(SCHEDULE_YEAR_OVERRIDE))
     config["schedule_month_override"] = os.getenv("SCHEDULE_MONTH_OVERRIDE", str(SCHEDULE_MONTH_OVERRIDE))
     config["reminder_time"] = os.getenv("REMINDER_TIME", REMINDER_TIME)
+    config["reminder_window_minutes"] = int(os.getenv("REMINDER_WINDOW_MINUTES", str(REMINDER_WINDOW_MINUTES)))
     config["attendance_time"] = os.getenv("ATTENDANCE_TIME", ATTENDANCE_TIME)
+    config["attendance_window_minutes"] = int(os.getenv("ATTENDANCE_WINDOW_MINUTES", str(ATTENDANCE_WINDOW_MINUTES)))
     config["monthly_schedule_send_at"] = os.getenv("MONTHLY_SCHEDULE_SEND_AT", MONTHLY_SCHEDULE_SEND_AT)
     config["scheduler_interval_seconds"] = int(os.getenv("SCHEDULER_INTERVAL_SECONDS", str(SCHEDULER_INTERVAL_SECONDS)))
     config["bot_timezone"] = os.getenv("BOT_TIMEZONE", BOT_TIMEZONE)
@@ -590,10 +631,9 @@ class ContactDirectory:
         return result
 
 
-def chat_registry():
-    export_url = config_or_env("CHAT_REGISTRY_EXPORT_URL", DEFAULT_CHAT_REGISTRY_EXPORT_URL)
+def normalize_registry_rows(rows):
     registry = {}
-    for row in cached_sheet_rows(export_url):
+    for row in rows:
         chat_id = normalize_id(row.get("chat_id"))
         if not chat_id:
             continue
@@ -604,8 +644,49 @@ def chat_registry():
     return registry
 
 
-def set_chat_professor(chat_id, phone, professor):
+def test_chat_registry():
+    value = read_json(TEST_CHAT_REGISTRY_PATH, [])
+    if isinstance(value, dict):
+        rows = [
+            {"chat_id": chat_id, **details}
+            for chat_id, details in value.items()
+            if isinstance(details, dict)
+        ]
+    else:
+        rows = value
+    return normalize_registry_rows(rows)
+
+
+def chat_registry(config=None):
+    if (config or {}).get("test_mode"):
+        return test_chat_registry()
+    export_url = config_or_env("CHAT_REGISTRY_EXPORT_URL", DEFAULT_CHAT_REGISTRY_EXPORT_URL)
+    return normalize_registry_rows(cached_sheet_rows(export_url))
+
+
+def set_test_chat_professor(chat_id, phone, professor):
+    rows = []
+    current = test_chat_registry()
+    current[normalize_id(chat_id)] = {
+        "phone": normalize_phone(phone),
+        "professor": normalize_text(professor),
+    }
+    for saved_chat_id, value in current.items():
+        rows.append(
+            {
+                "chat_id": saved_chat_id,
+                "phone": value.get("phone", ""),
+                "professor": value.get("professor", ""),
+            }
+        )
+    write_json(TEST_CHAT_REGISTRY_PATH, rows)
+
+
+def set_chat_professor(chat_id, phone, professor, config=None):
     chat_id = normalize_id(chat_id)
+    if (config or {}).get("test_mode"):
+        set_test_chat_professor(chat_id, phone, professor)
+        return
     export_url = config_or_env("CHAT_REGISTRY_EXPORT_URL", DEFAULT_CHAT_REGISTRY_EXPORT_URL)
     webhook_url = config_or_env("CHAT_REGISTRY_WEBHOOK_URL", DEFAULT_CHAT_REGISTRY_WEBHOOK_URL)
     post_sheet_action(
@@ -620,16 +701,20 @@ def set_chat_professor(chat_id, phone, professor):
     invalidate_sheet_cache(export_url)
 
 
-def get_chat_professor(chat_id):
-    return normalize_text(chat_registry().get(normalize_id(chat_id), {}).get("professor"))
+def get_chat_professor(chat_id, config=None):
+    return normalize_text(chat_registry(config).get(normalize_id(chat_id), {}).get("professor"))
 
 
-def get_chat_registration(chat_id):
-    item = chat_registry().get(normalize_id(chat_id), {})
+def get_chat_registration(chat_id, config=None):
+    item = chat_registry(config).get(normalize_id(chat_id), {})
     return {
         "phone": normalize_phone(item.get("phone")),
         "professor": normalize_text(item.get("professor")),
     }
+
+
+def filtered_chat_registry(config):
+    return chat_registry(config)
 
 
 def classes_keyboard(show_today_attendance=False):
@@ -790,6 +875,87 @@ def pending_attendance():
     return pending
 
 
+def pending_attendance_key_exists(chat_id, key):
+    export_url = config_or_env("PENDING_ATTENDANCE_EXPORT_URL", DEFAULT_PENDING_ATTENDANCE_EXPORT_URL)
+    invalidate_sheet_cache(export_url)
+    state = pending_attendance().get(normalize_id(chat_id), {})
+    return normalize_text(key) in state.get("items", {})
+
+
+def config_value_or_env(config, env_name, config_name, default):
+    return os.getenv(env_name, (config or {}).get(config_name, default)).strip()
+
+
+def attendance_log(config=None):
+    export_url = config_value_or_env(
+        config,
+        "ATTENDANCE_LOG_EXPORT_URL",
+        "attendance_log_export_url",
+        DEFAULT_ATTENDANCE_LOG_EXPORT_URL,
+    )
+    logged = set()
+    try:
+        rows = cached_sheet_rows(export_url)
+    except Exception as exc:
+        print(f"Attendance log read failed, continuing without sent-log cache: {exc}")
+        return logged
+    for row in rows:
+        chat_id = normalize_id(row.get("chat_id"))
+        date_text = normalize_text(row.get("date"))
+        professor = normalize_text(row.get("professor"))
+        student = normalize_text(row.get("student"))
+        if chat_id and date_text and professor and student:
+            logged.add(attendance_log_key(chat_id, date_text, professor, student))
+    return logged
+
+
+def attendance_log_key(chat_id, date_text, professor, student):
+    return ":".join(
+        [
+            normalize_id(chat_id),
+            normalize_text(date_text),
+            compact_text(professor),
+            compact_text(student),
+        ]
+    )
+
+
+def upsert_attendance_log(config, chat_id, item, status="", sent_at="", answered_at=""):
+    webhook_url = config_value_or_env(
+        config,
+        "ATTENDANCE_LOG_WEBHOOK_URL",
+        "attendance_log_webhook_url",
+        DEFAULT_ATTENDANCE_LOG_WEBHOOK_URL,
+    )
+    if not webhook_url:
+        return False
+    export_url = config_value_or_env(
+        config,
+        "ATTENDANCE_LOG_EXPORT_URL",
+        "attendance_log_export_url",
+        DEFAULT_ATTENDANCE_LOG_EXPORT_URL,
+    )
+    post_sheet_action_with_retry(
+        webhook_url,
+        {
+            "action": "upsert_attendance_log",
+            "date": item["date"],
+            "professor": item["professor"],
+            "student": item["student"],
+            "chat_id": normalize_id(chat_id),
+            "sent_at": sent_at,
+            "answered_at": answered_at,
+            "status": status,
+        },
+    )
+    invalidate_sheet_cache(export_url)
+    return True
+
+
+def now_iso(config):
+    return datetime.now(get_bot_timezone(config.get("bot_timezone", BOT_TIMEZONE))).isoformat(timespec="seconds")
+
+
 def upsert_pending_attendance(chat_id, item):
     chat_id = normalize_id(chat_id)
     export_url = config_or_env("PENDING_ATTENDANCE_EXPORT_URL", DEFAULT_PENDING_ATTENDANCE_EXPORT_URL)
@@ -916,6 +1082,16 @@ def complete_attendance_callback(bot, config, schedule_reader, chat_id, attendan
 
     active["status"] = status
     record_absence(config, active)
+    try:
+        upsert_attendance_log(
+            config,
+            chat_id,
+            active,
+            status=status,
+            answered_at=datetime.now(get_bot_timezone(config.get("bot_timezone", BOT_TIMEZONE))).isoformat(timespec="seconds"),
+        )
+    except Exception as exc:
+        print(f"Attendance log answer write failed: {exc}")
     keyboard = professor_keyboard(config, schedule_reader, active["professor"])
     if status == ATTENDANCE_ABSENT_TEXT:
         bot.send_message(chat_id, "غیبت دانشجو ثبت شد با تشکر", keyboard=keyboard)
@@ -951,7 +1127,7 @@ def handle_callback_query(bot, config, schedule_reader, callback_query):
         return
     if complete_attendance_callback(bot, config, schedule_reader, chat_id, attendance_id, status):
         return
-    registration = get_chat_registration(chat_id)
+    registration = get_chat_registration(chat_id, config)
     bot.send_message(
         chat_id,
         "این مورد قبلا ثبت شده",
@@ -969,7 +1145,7 @@ def handle_message(bot, config, schedule_reader, contact_directory, message):
     if chat_id is None:
         return
 
-    registration = get_chat_registration(chat_id)
+    registration = get_chat_registration(chat_id, config)
     registered_phone = registration["phone"]
     registered_professor = registration["professor"]
 
@@ -1014,6 +1190,7 @@ def handle_message(bot, config, schedule_reader, contact_directory, message):
                     chat_id,
                     registered_professor,
                     target_date=config.get("current_jalali_date"),
+                    send_mode="manual",
                 )
                 delete_processing_message(bot, chat_id, processing_message)
                 if not messages:
@@ -1055,7 +1232,7 @@ def handle_message(bot, config, schedule_reader, contact_directory, message):
     phones = contact_directory.professor_phone_map()
     if contact_phone in phones:
         professor = phones[contact_phone]
-        set_chat_professor(chat_id, contact_phone, professor)
+        set_chat_professor(chat_id, contact_phone, professor, config)
         schedule = schedule_reader.schedule_for_professor(professor)
         delete_processing_message(bot, chat_id, processing_message)
         bot.send_message(
@@ -1077,13 +1254,13 @@ def reminder_key(chat_id, year, month, day):
     return f"{chat_id}:{year:04d}-{month:02d}-{day:02d}"
 
 
-def send_due_reminders(bot, schedule_reader, target_date=None, dry_run=False):
+def send_due_reminders(bot, config, schedule_reader, target_date=None, dry_run=False):
     year, month, day = parse_jalali_date(target_date)
     sheet_year, sheet_month, _ = schedule_reader.month_info()
     if year != sheet_year or month != sheet_month:
         return []
     messages = []
-    for chat_id, value in chat_registry().items():
+    for chat_id, value in filtered_chat_registry(config).items():
         professor = normalize_text(value.get("professor"))
         if not professor:
             continue
@@ -1132,7 +1309,7 @@ def send_due_monthly_schedules(bot, config, schedule_reader, send_at, now, dry_r
         return []
 
     messages = []
-    for chat_id, value in chat_registry().items():
+    for chat_id, value in filtered_chat_registry(config).items():
         professor = normalize_text(value.get("professor"))
         if not professor:
             continue
@@ -1167,6 +1344,8 @@ def send_attendance_questions_for_professor(
     professor,
     target_date=None,
     pending=None,
+    logged_attendance=None,
+    send_mode="automatic",
     dry_run=False,
 ):
     year, month, day = parse_jalali_date(target_date)
@@ -1177,6 +1356,7 @@ def send_attendance_questions_for_professor(
     chat_id = normalize_id(chat_id)
     professor = normalize_text(professor)
     pending = pending if pending is not None else pending_attendance()
+    logged_attendance = logged_attendance if logged_attendance is not None else attendance_log(config)
     state = pending.get(chat_id, {})
     pending_items = state.get("items", {})
     day_schedule = schedule_reader.schedule_for_day(professor, day)
@@ -1184,56 +1364,103 @@ def send_attendance_questions_for_professor(
 
     for item in day_schedule:
         key = attendance_key(chat_id, year, month, day, item["student"])
-        if key in ATTENDANCE_SENT_THIS_RUN or key in pending_items:
-            continue
         absence_item = {
             "professor": professor,
             "student": item["student"],
             "date": jalali_date_text(year, month, day),
             "key": key,
         }
-        messages.append({"chat_id": chat_id, **absence_item})
+        log_key = attendance_log_key(chat_id, absence_item["date"], professor, item["student"])
+        if key in ATTENDANCE_SENT_THIS_RUN or key in pending_items or log_key in logged_attendance:
+            continue
         if dry_run:
+            messages.append({"chat_id": chat_id, **absence_item})
+            continue
+        pending_saved = False
+        last_pending_error = None
+        for attempt in range(1, SHEET_ACTION_RETRY_ATTEMPTS + 1):
+            try:
+                upsert_pending_attendance(chat_id, absence_item)
+                pending_saved = True
+                break
+            except Exception as exc:
+                last_pending_error = exc
+                try:
+                    if pending_attendance_key_exists(chat_id, key):
+                        print(
+                            "Pending attendance write returned an error, "
+                            "but the key exists in the sheet; continuing."
+                        )
+                        pending_saved = True
+                        break
+                except Exception as verify_exc:
+                    print(f"Pending attendance verification failed: {verify_exc}")
+                if attempt < SHEET_ACTION_RETRY_ATTEMPTS:
+                    print(
+                        "Pending attendance sheet write failed "
+                        f"(attempt {attempt}/{SHEET_ACTION_RETRY_ATTEMPTS}); "
+                        f"retrying in {SHEET_ACTION_RETRY_DELAY_SECONDS}s: {exc}"
+                    )
+                    time.sleep(SHEET_ACTION_RETRY_DELAY_SECONDS)
+        if not pending_saved:
+            print(f"Pending attendance sheet write failed; attendance message was not sent: {last_pending_error}")
             continue
         pending_items[key] = absence_item
         try:
-            upsert_pending_attendance(chat_id, absence_item)
-        except Exception as exc:
-            print(f"Pending attendance sheet write failed, using local JSON fallback: {exc}")
-        bot.send_message(
-            chat_id,
-            format_attendance_question(absence_item),
-            keyboard=attendance_inline_keyboard(key),
-        )
+            bot.send_message(
+                chat_id,
+                format_attendance_question(absence_item),
+                keyboard=attendance_inline_keyboard(key),
+            )
+        except Exception:
+            pending_items.pop(key, None)
+            try:
+                delete_pending_attendance(chat_id, key)
+            except Exception as exc:
+                print(f"Pending attendance cleanup failed after Bale send failure: {exc}")
+            raise
         ATTENDANCE_SENT_THIS_RUN.add(key)
+        messages.append({"chat_id": chat_id, **absence_item})
+        try:
+            if upsert_attendance_log(
+                config,
+                chat_id,
+                absence_item,
+                sent_at=datetime.now(get_bot_timezone(config.get("bot_timezone", BOT_TIMEZONE))).isoformat(timespec="seconds"),
+            ):
+                logged_attendance.add(log_key)
+        except Exception as exc:
+            print(f"Attendance log sent write failed: {exc}")
 
     if pending_items:
         pending[chat_id] = {"items": pending_items}
     return messages
 
 
-def send_due_attendance_questions(bot, schedule_reader, target_date=None, dry_run=False):
+def send_due_attendance_questions(bot, config, schedule_reader, target_date=None, dry_run=False):
     year, month, day = parse_jalali_date(target_date)
     sheet_year, sheet_month, _ = schedule_reader.month_info()
     if year != sheet_year or month != sheet_month:
         return []
 
     pending = pending_attendance()
+    logged_attendance = attendance_log(config)
     messages = []
 
-    for chat_id, value in chat_registry().items():
+    for chat_id, value in filtered_chat_registry(config).items():
         professor = normalize_text(value.get("professor"))
         if not professor:
             continue
         messages.extend(
             send_attendance_questions_for_professor(
                 bot,
-                {},
+                config,
                 schedule_reader,
                 chat_id,
                 professor,
                 target_date=target_date,
                 pending=pending,
+                logged_attendance=logged_attendance,
                 dry_run=dry_run,
             )
         )
@@ -1243,7 +1470,9 @@ def send_due_attendance_questions(bot, schedule_reader, target_date=None, dry_ru
 
 def reminder_loop(bot, config, schedule_reader):
     reminder_time = config.get("reminder_time", "09:00")
+    reminder_window_minutes = int(config.get("reminder_window_minutes", REMINDER_WINDOW_MINUTES))
     attendance_time = config.get("attendance_time", "21:00")
+    attendance_window_minutes = int(config.get("attendance_window_minutes", ATTENDANCE_WINDOW_MINUTES))
     monthly_schedule_send_at = config.get("monthly_schedule_send_at", MONTHLY_SCHEDULE_SEND_AT)
     target_date = config.get("current_jalali_date")
     interval_seconds = int(config.get("scheduler_interval_seconds", SCHEDULER_INTERVAL_SECONDS))
@@ -1251,24 +1480,27 @@ def reminder_loop(bot, config, schedule_reader):
     print(
         "Scheduler is using "
         f"{timezone_label(timezone)}; now={datetime.now(timezone).strftime('%Y-%m-%d %H:%M:%S')}; "
-        f"reminder={reminder_time}; attendance={attendance_time}; "
+        f"reminder={reminder_time}; reminder_window={reminder_window_minutes}m; "
+        f"attendance={attendance_time}; "
+        f"attendance_window={attendance_window_minutes}m; "
         f"monthly_schedule={monthly_schedule_send_at}; interval={interval_seconds}s"
     )
     while True:
         try:
             now = datetime.now(timezone)
             send_due_monthly_schedules(bot, config, schedule_reader, monthly_schedule_send_at, now)
-            if time_matches(now, reminder_time):
-                send_due_reminders(bot, schedule_reader, target_date=target_date)
-            if time_matches(now, attendance_time):
-                send_due_attendance_questions(bot, schedule_reader, target_date=target_date)
+            if time_is_in_window(now, reminder_time, reminder_window_minutes):
+                send_due_reminders(bot, config, schedule_reader, target_date=target_date)
+            if time_is_in_window(now, attendance_time, attendance_window_minutes):
+                send_due_attendance_questions(bot, config, schedule_reader, target_date=target_date)
         except Exception as exc:
             print(f"Scheduler error: {exc}")
         time.sleep(interval_seconds)
 
 
-def run():
+def run(test_mode=False):
     config = load_config()
+    config["test_mode"] = bool(test_mode)
     start_health_server()
     bot = BaleBot(config)
     schedule_reader = SheetSchedule(config["sheet_export_url"], config)
@@ -1301,6 +1533,7 @@ def run():
 
 def preview_schedule(args):
     config = load_config()
+    config["test_mode"] = bool(getattr(args, "test", False))
     reader = SheetSchedule(config["sheet_export_url"], config)
     professor = ContactDirectory(config["contacts_export_url"]).professor_phone_map().get(normalize_phone(args.phone))
     if not professor:
@@ -1311,6 +1544,7 @@ def preview_schedule(args):
 
 def preview_reminders(args):
     config = load_config()
+    config["test_mode"] = bool(getattr(args, "test", False))
     reader = SheetSchedule(config["sheet_export_url"], config)
     if args.phone:
         professor = ContactDirectory(config["contacts_export_url"]).professor_phone_map().get(normalize_phone(args.phone))
@@ -1325,7 +1559,7 @@ def preview_reminders(args):
         print(format_reminder(professor, day_schedule, reader))
         return
 
-    messages = send_due_reminders(None, reader, target_date=args.date, dry_run=True)
+    messages = send_due_reminders(None, config, reader, target_date=args.date, dry_run=True)
     if not messages:
         print("No reminders found for this date.")
         return
@@ -1337,8 +1571,9 @@ def preview_reminders(args):
 
 def preview_attendance(args):
     config = load_config()
+    config["test_mode"] = bool(getattr(args, "test", False))
     reader = SheetSchedule(config["sheet_export_url"], config)
-    messages = send_due_attendance_questions(None, reader, target_date=args.date, dry_run=True)
+    messages = send_due_attendance_questions(None, config, reader, target_date=args.date, dry_run=True)
     if not messages:
         print("No attendance questions found for this date.")
         return
@@ -1350,6 +1585,7 @@ def preview_attendance(args):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--test", action="store_true", help="Use local test_chat_registry.json instead of chat-id Google Sheet")
     subparsers = parser.add_subparsers(dest="command")
     schedule_parser = subparsers.add_parser("preview-schedule")
     schedule_parser.add_argument("--phone", required=True)
@@ -1366,7 +1602,7 @@ def main():
     elif args.command == "test-attendance":
         preview_attendance(args)
     else:
-        run()
+        run(test_mode=args.test)
 
 
 if __name__ == "__main__":

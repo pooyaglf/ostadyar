@@ -4,6 +4,9 @@
   "sheet_export_url": "https://docs.google.com/spreadsheets/d/1jwQ-2k6zbOGLTgPjSpOXGvnlBRWm70Mk/export?format=xlsx",
   "contacts_export_url": "https://docs.google.com/spreadsheets/d/1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/export?format=xlsx",
   "absence_webhook_url": "https://script.google.com/macros/s/AKfycbwnjF9SHN--LO5pyAhk6ToENYK09WFaTvtUu1UkMFrhKcS5x9O3Xxdb_uOxIClZ4Y2Qhw/exec",
+  "attendance_log_export_url": "https://docs.google.com/spreadsheets/d/1x45n5nnYM1GP5E527CDx5yuZ46A_sVCcPgUqdtMhEro/export?format=xlsx",
+  "attendance_log_webhook_url": "https://script.google.com/macros/s/AKfycbwJ0YFWJkVQhDTdvclLGnj0FNE_oCTYivJJnzgmuhQajBPcsQy5Ygf-TG8wER3XKYT0Bw/exec",
+  "reminder_window_minutes": 15,
   "bot_timezone": "Asia/Tehran",
-  "note": "Schedule month/year and reminder/attendance times are set at the top of bot.py"
+  "note": "Schedule month/year, reminder/attendance times, and attendance window are set at the top of bot.py"
 }

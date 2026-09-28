@@ -58,6 +58,8 @@ POLL_TIMEOUT_SECONDS=25
 SHEET_CACHE_SECONDS=300
 DATA_DIR=/app/data
 ABSENCE_WEBHOOK_URL=https://script.google.com/macros/s/AKfycbw6Mn9mGMjkUsQKaLRiY6MDV22Xc6jtWB4BPpzJo3vQk7rvr1wC6h-ZfQQwD89FECo/exec
+ATTENDANCE_LOG_EXPORT_URL=https://docs.google.com/spreadsheets/d/1x45n5nnYM1GP5E527CDx5yuZ46A_sVCcPgUqdtMhEro/export?format=xlsx
+ATTENDANCE_LOG_WEBHOOK_URL=
 BOT_TIMEZONE=Asia/Tehran
 ```
 
@@ -68,12 +70,16 @@ SCHEDULE_YEAR_OVERRIDE = ""
 SCHEDULE_MONTH_OVERRIDE = ""
 CURRENT_JALALI_DATE_OVERRIDE = ""
 REMINDER_TIME = "09:00"
+REMINDER_WINDOW_MINUTES = 15
 ATTENDANCE_TIME = "21:00"
+ATTENDANCE_WINDOW_MINUTES = 30
 SCHEDULER_INTERVAL_SECONDS = 15
 BOT_TIMEZONE = "Asia/Tehran"
 ```
 
-Leave `SCHEDULE_YEAR_OVERRIDE` and `SCHEDULE_MONTH_OVERRIDE` empty to read month/year from the class sheet title. `REMINDER_TIME` controls the morning reminder. `ATTENDANCE_TIME` controls the attendance question. Use `HH:MM`, for example `14:35`. `BOT_TIMEZONE` makes those times independent of the server timezone.
+Leave `SCHEDULE_YEAR_OVERRIDE` and `SCHEDULE_MONTH_OVERRIDE` empty to read month/year from the class sheet title. `REMINDER_TIME` starts the morning reminder window, and `REMINDER_WINDOW_MINUTES` controls how long it keeps retrying. `ATTENDANCE_TIME` starts the attendance question window, and `ATTENDANCE_WINDOW_MINUTES` controls how long the bot keeps retrying that daily send. Use `HH:MM`, for example `14:35`. `BOT_TIMEZONE` makes those times independent of the server timezone.
+
+Run `python bot.py --test` to use `test_chat_registry.json` instead of the chat-id Google Sheet. This lets you test reminder and attendance sends with only the chat IDs in that local file.
 
 Keep Hamravesh replicas at `1`, because the Bale polling bot must not run twice.
 
