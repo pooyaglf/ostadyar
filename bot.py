@@ -164,6 +164,7 @@ PROFESSOR_WELCOME_MESSAGE = (
     "کمیته دانشجویی کلینیک ویژه"
 )
 LOGIN_SUCCESS_MESSAGE = (
+    "با عرض تشکر خدمت استاد گرامی {professor_name}\n"
     "لیست اینترن های ماه {schedule_month} شما به صورت زیر است :"
 )
 
