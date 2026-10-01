@@ -53,6 +53,9 @@ Optional:
 ```text
 SHEET_EXPORT_URL=https://docs.google.com/spreadsheets/d/1jwQ-2k6zbOGLTgPjSpOXGvnlBRWm70Mk/export?format=xlsx
 CONTACTS_EXPORT_URL=https://docs.google.com/spreadsheets/d/1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/export?format=xlsx
+STUDENT_CONTACTS_EXPORT_URL=https://docs.google.com/spreadsheets/d/1GqjqBti0Xu0gZ9_m__a5voTOPq9OmUnwcZlAsnFbKCM/export?format=xlsx
+STUDENT_CHAT_REGISTRY_EXPORT_URL=https://docs.google.com/spreadsheets/d/1pleT6E8_upnr_0TJImZXeENZD-mzdqcdqgQTUvCIVN4/export?format=xlsx
+STUDENT_CHAT_REGISTRY_WEBHOOK_URL=https://script.google.com/macros/s/AKfycbzakE5t-mn_OlbeUJw9udcak8falohVf6XAno9tAOFNTpKWplxhFhdN5rewy80ekvg0UA/exec
 API_BASE_URL=https://tapi.bale.ai/bot
 POLL_TIMEOUT_SECONDS=25
 SHEET_CACHE_SECONDS=300
@@ -71,15 +74,19 @@ SCHEDULE_MONTH_OVERRIDE = ""
 CURRENT_JALALI_DATE_OVERRIDE = ""
 REMINDER_TIME = "09:00"
 REMINDER_WINDOW_MINUTES = 15
+STUDENT_REMINDER_TIME = "08:00"
+STUDENT_REMINDER_WINDOW_MINUTES = 15
 ATTENDANCE_TIME = "21:00"
 ATTENDANCE_WINDOW_MINUTES = 30
 SCHEDULER_INTERVAL_SECONDS = 15
 BOT_TIMEZONE = "Asia/Tehran"
 ```
 
-Leave `SCHEDULE_YEAR_OVERRIDE` and `SCHEDULE_MONTH_OVERRIDE` empty to read month/year from the class sheet title. `REMINDER_TIME` starts the morning reminder window, and `REMINDER_WINDOW_MINUTES` controls how long it keeps retrying. `ATTENDANCE_TIME` starts the attendance question window, and `ATTENDANCE_WINDOW_MINUTES` controls how long the bot keeps retrying that daily send. Use `HH:MM`, for example `14:35`. `BOT_TIMEZONE` makes those times independent of the server timezone.
+Leave `SCHEDULE_YEAR_OVERRIDE` and `SCHEDULE_MONTH_OVERRIDE` empty to read month/year from the class sheet title. `REMINDER_TIME` starts the professor morning reminder window, and `STUDENT_REMINDER_TIME` starts the student morning reminder window. Their window settings control how long the bot keeps retrying. `ATTENDANCE_TIME` starts the attendance question window, and `ATTENDANCE_WINDOW_MINUTES` controls how long the bot keeps retrying that daily send. Use `HH:MM`, for example `14:35`. `BOT_TIMEZONE` makes those times independent of the server timezone.
 
 Run `python bot.py --test` to use `test_chat_registry.json` instead of the chat-id Google Sheet. This lets you test reminder and attendance sends with only the chat IDs in that local file.
+
+For read-only student checks, use `python bot.py preview-schedule --student --phone 9135713829` or `python bot.py test-reminders --student --date 1405-07-09 --phone 9135713829`.
 
 Keep Hamravesh replicas at `1`, because the Bale polling bot must not run twice.
 
