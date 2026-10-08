@@ -10,7 +10,7 @@ from openpyxl import load_workbook
 
 DEFAULT_STUDENT_CONTACTS_EXPORT_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1GqjqBti0Xu0gZ9_m__a5voTOPq9OmUnwcZlAsnFbKCM/export?format=xlsx"
+    "1NLGwdUXK6cDLPx56gKe9oX89UbMSUhFwHHFA0uVDTt4/export?format=xlsx"
 )
 DEFAULT_STUDENT_CHAT_REGISTRY_EXPORT_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -242,12 +242,36 @@ class StudentDirectory:
     def __init__(self, export_url):
         self.cache = WorkbookCache(export_url)
 
+    def header_index(self, headers, aliases, default):
+        for alias in aliases:
+            alias_key = compact_text(alias)
+            if alias_key in headers:
+                return headers.index(alias_key)
+        return default
+
     def student_phone_map(self):
         workbook = self.cache.workbook_data()
         worksheet = workbook[workbook.sheetnames[0]]
         headers = [compact_text(cell.value) for cell in worksheet[1]]
-        name_index = headers.index(compact_text("student name")) if compact_text("student name") in headers else 0
-        phone_index = headers.index(compact_text("phone number")) if compact_text("phone number") in headers else 1
+        name_index = self.header_index(
+            headers,
+            [
+                "student name",
+                "نام و نام خانوادگی",
+                "نام و نام خانوادگی خود را انتخاب کنید",
+            ],
+            1,
+        )
+        phone_index = self.header_index(
+            headers,
+            [
+                "phone number",
+                "شماره تلفن",
+                "شماره همراه",
+                "شماره تلفنی که عضو بله هستین به صورت اعداد انگلیسی",
+            ],
+            2,
+        )
         result = {}
         for row in worksheet.iter_rows(min_row=2, values_only=True):
             student = normalize_text(row[name_index] if len(row) > name_index else "")

@@ -53,7 +53,7 @@ Optional:
 ```text
 SHEET_EXPORT_URL=https://docs.google.com/spreadsheets/d/1jwQ-2k6zbOGLTgPjSpOXGvnlBRWm70Mk/export?format=xlsx
 CONTACTS_EXPORT_URL=https://docs.google.com/spreadsheets/d/1P_wWkcMIpsUZYME8xCllQRvjfHSGCa0s/export?format=xlsx
-STUDENT_CONTACTS_EXPORT_URL=https://docs.google.com/spreadsheets/d/1GqjqBti0Xu0gZ9_m__a5voTOPq9OmUnwcZlAsnFbKCM/export?format=xlsx
+STUDENT_CONTACTS_EXPORT_URL=https://docs.google.com/spreadsheets/d/1NLGwdUXK6cDLPx56gKe9oX89UbMSUhFwHHFA0uVDTt4/export?format=xlsx
 STUDENT_CHAT_REGISTRY_EXPORT_URL=https://docs.google.com/spreadsheets/d/1pleT6E8_upnr_0TJImZXeENZD-mzdqcdqgQTUvCIVN4/export?format=xlsx
 STUDENT_CHAT_REGISTRY_WEBHOOK_URL=https://script.google.com/macros/s/AKfycbzakE5t-mn_OlbeUJw9udcak8falohVf6XAno9tAOFNTpKWplxhFhdN5rewy80ekvg0UA/exec
 API_BASE_URL=https://tapi.bale.ai/bot
