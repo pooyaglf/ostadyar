@@ -63,6 +63,8 @@ DATA_DIR=/app/data
 ABSENCE_WEBHOOK_URL=https://script.google.com/macros/s/AKfycbw6Mn9mGMjkUsQKaLRiY6MDV22Xc6jtWB4BPpzJo3vQk7rvr1wC6h-ZfQQwD89FECo/exec
 ATTENDANCE_LOG_EXPORT_URL=https://docs.google.com/spreadsheets/d/1x45n5nnYM1GP5E527CDx5yuZ46A_sVCcPgUqdtMhEro/export?format=xlsx
 ATTENDANCE_LOG_WEBHOOK_URL=
+STUDENT_REPORT_LOG_EXPORT_URL=https://docs.google.com/spreadsheets/d/1AOo2eVo7Mfp9v0eCUlodZkClpa65Hx-QROfdyfZRf-g/export?format=xlsx
+STUDENT_REPORT_LOG_WEBHOOK_URL=https://script.google.com/macros/s/AKfycbzcrLNoWwOT-yUA21C1yzOMdFG4QrmP7jacaFulxcccsjV1ShsShmz82FMiCWR-OjBTCg/exec
 BOT_TIMEZONE=Asia/Tehran
 ```
 

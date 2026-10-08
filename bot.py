@@ -110,6 +110,14 @@ DEFAULT_ATTENDANCE_LOG_WEBHOOK_URL = (
     "https://script.google.com/macros/s/"
     "AKfycbwJ0YFWJkVQhDTdvclLGnj0FNE_oCTYivJJnzgmuhQajBPcsQy5Ygf-TG8wER3XKYT0Bw/exec"
 )
+DEFAULT_STUDENT_REPORT_LOG_EXPORT_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1AOo2eVo7Mfp9v0eCUlodZkClpa65Hx-QROfdyfZRf-g/export?format=xlsx"
+)
+DEFAULT_STUDENT_REPORT_LOG_WEBHOOK_URL = (
+    "https://script.google.com/macros/s/"
+    "AKfycbzcrLNoWwOT-yUA21C1yzOMdFG4QrmP7jacaFulxcccsjV1ShsShmz82FMiCWR-OjBTCg/exec"
+)
 START_MESSAGE = (
     "با عرض سلام و احترام\n"
     "به ربات کلینیک ویژه ی دانشگاه علوم پزشکی اصفهان خوش آمدید.\n"
@@ -497,6 +505,14 @@ def load_config():
     config["absence_webhook_url"] = os.getenv(
         "ABSENCE_WEBHOOK_URL",
         config.get("absence_webhook_url", DEFAULT_ABSENCE_WEBHOOK_URL),
+    )
+    config["student_report_log_export_url"] = os.getenv(
+        "STUDENT_REPORT_LOG_EXPORT_URL",
+        config.get("student_report_log_export_url", DEFAULT_STUDENT_REPORT_LOG_EXPORT_URL),
+    )
+    config["student_report_log_webhook_url"] = os.getenv(
+        "STUDENT_REPORT_LOG_WEBHOOK_URL",
+        config.get("student_report_log_webhook_url", DEFAULT_STUDENT_REPORT_LOG_WEBHOOK_URL),
     )
     config["current_jalali_date"] = os.getenv("CURRENT_JALALI_DATE", CURRENT_JALALI_DATE_OVERRIDE)
     config["schedule_year_override"] = os.getenv("SCHEDULE_YEAR_OVERRIDE", str(SCHEDULE_YEAR_OVERRIDE))
@@ -1049,6 +1065,62 @@ def upsert_attendance_log(config, chat_id, item, status="", sent_at="", answered
     return True
 
 
+def student_report_log_key(professor_chat_id, student_chat_id, item):
+    return ":".join(
+        [
+            normalize_id(professor_chat_id),
+            normalize_id(student_chat_id),
+            normalize_text(item.get("date")),
+            compact_text(item.get("professor")),
+            compact_text(item.get("student")),
+        ]
+    )
+
+
+def upsert_student_report_log(
+    config,
+    professor_chat_id,
+    student_chat_id,
+    item,
+    status,
+    message_text,
+    result,
+    sent_at="",
+):
+    webhook_url = config_value_or_env(
+        config,
+        "STUDENT_REPORT_LOG_WEBHOOK_URL",
+        "student_report_log_webhook_url",
+        DEFAULT_STUDENT_REPORT_LOG_WEBHOOK_URL,
+    )
+    if not webhook_url:
+        return False
+    export_url = config_value_or_env(
+        config,
+        "STUDENT_REPORT_LOG_EXPORT_URL",
+        "student_report_log_export_url",
+        DEFAULT_STUDENT_REPORT_LOG_EXPORT_URL,
+    )
+    post_sheet_action_with_retry(
+        webhook_url,
+        {
+            "action": "upsert_student_report_log",
+            "id": student_report_log_key(professor_chat_id, student_chat_id, item),
+            "sent_at": sent_at or now_iso(config),
+            "student": item["student"],
+            "student_chat_id": normalize_id(student_chat_id),
+            "professor": item["professor"],
+            "professor_chat_id": normalize_id(professor_chat_id),
+            "date": item["date"],
+            "status": status,
+            "message_text": message_text,
+            "result": result,
+        },
+    )
+    invalidate_sheet_cache(export_url)
+    return True
+
+
 def now_iso(config):
     return datetime.now(get_bot_timezone(config.get("bot_timezone", BOT_TIMEZONE))).isoformat(timespec="seconds")
 
@@ -1180,16 +1252,46 @@ def complete_attendance_callback(bot, config, schedule_reader, chat_id, attendan
     active["status"] = status
     record_absence(config, active)
     student_chat_id = student_chat_id_by_name(active["student"], config)
+    student_status = "غیبت" if status == ATTENDANCE_ABSENT_TEXT else "حضور"
+    student_message_text = (
+        f"استاد {active['professor']} در تاریخ {active['date']} برای شما {student_status} ثبت کرده است"
+    )
     if student_chat_id:
-        student_status = "غیبت" if status == ATTENDANCE_ABSENT_TEXT else "حضور"
         try:
             bot.send_message(
                 student_chat_id,
-                f"استاد {active['professor']} در تاریخ {active['date']} برای شما {student_status} ثبت کرده است",
+                student_message_text,
                 keyboard=student_keyboard(),
             )
+            student_report_result = "sent"
         except Exception as exc:
+            student_report_result = f"send_failed: {exc}"
             print(f"Student attendance notification failed: {exc}")
+        try:
+            upsert_student_report_log(
+                config,
+                chat_id,
+                student_chat_id,
+                active,
+                student_status,
+                student_message_text,
+                student_report_result,
+            )
+        except Exception as log_exc:
+            print(f"Student report log write failed: {log_exc}")
+    else:
+        try:
+            upsert_student_report_log(
+                config,
+                chat_id,
+                "",
+                active,
+                student_status,
+                student_message_text,
+                "student_chat_id_not_found",
+            )
+        except Exception as exc:
+            print(f"Student report log write failed: {exc}")
     try:
         upsert_attendance_log(
             config,
@@ -1303,7 +1405,12 @@ def handle_message(bot, config, schedule_reader, contact_directory, student_dire
     if text == STUDENT_ABSENCE_STATUS_TEXT:
         if registered_student_phone and registered_student:
             processing_message = send_processing_message(bot, chat_id)
-            text_to_send = format_student_absence_history(config, registered_student, ATTENDANCE_ABSENT_TEXT)
+            text_to_send = format_student_absence_history(
+                config,
+                registered_student,
+                ATTENDANCE_ABSENT_TEXT,
+                schedule_reader,
+            )
             delete_processing_message(bot, chat_id, processing_message)
             bot.send_message(chat_id, text_to_send, keyboard=student_keyboard())
             return

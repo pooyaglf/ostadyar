@@ -32,6 +32,29 @@ STUDENT_ABSENCE_STATUS_TEXT = "مشاهده ی حضور و غیاب من"
 
 STUDENT_REMINDERS_SENT_THIS_RUN = set()
 STUDENT_SHEET_ROW_CACHE = {}
+PERSIAN_MONTHS_BY_NUMBER = {
+    1: "فروردین",
+    2: "اردیبهشت",
+    3: "خرداد",
+    4: "تیر",
+    5: "مرداد",
+    6: "شهریور",
+    7: "مهر",
+    8: "آبان",
+    9: "آذر",
+    10: "دی",
+    11: "بهمن",
+    12: "اسفند",
+}
+PERSIAN_WEEKDAYS = [
+    "دوشنبه",
+    "سه شنبه",
+    "چهارشنبه",
+    "پنج شنبه",
+    "جمعه",
+    "شنبه",
+    "یکشنبه",
+]
 
 
 def normalize_text(value):
@@ -85,6 +108,73 @@ def match_text_key(value):
 
 def to_persian_digits(value):
     return str(value).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+
+
+def jalali_to_gregorian(j_year, j_month, j_day):
+    j_days_in_month = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29]
+    g_days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+    jy = j_year - 979
+    jm = j_month - 1
+    jd = j_day - 1
+
+    j_day_no = 365 * jy + (jy // 33) * 8 + ((jy % 33) + 3) // 4
+    for index in range(jm):
+        j_day_no += j_days_in_month[index]
+    j_day_no += jd
+
+    g_day_no = j_day_no + 79
+    gy = 1600 + 400 * (g_day_no // 146097)
+    g_day_no %= 146097
+
+    leap = True
+    if g_day_no >= 36525:
+        g_day_no -= 1
+        gy += 100 * (g_day_no // 36524)
+        g_day_no %= 36524
+        if g_day_no >= 365:
+            g_day_no += 1
+        else:
+            leap = False
+
+    gy += 4 * (g_day_no // 1461)
+    g_day_no %= 1461
+
+    if g_day_no >= 366:
+        leap = False
+        g_day_no -= 1
+        gy += g_day_no // 365
+        g_day_no %= 365
+
+    gm = 0
+    while gm < 11:
+        days_in_month = g_days_in_month[gm]
+        if gm == 1 and leap:
+            days_in_month += 1
+        if g_day_no < days_in_month:
+            break
+        g_day_no -= days_in_month
+        gm += 1
+
+    return gy, gm + 1, g_day_no + 1
+
+
+def jalali_weekday_name(j_year, j_month, j_day):
+    g_year, g_month, g_day = jalali_to_gregorian(j_year, j_month, j_day)
+    return PERSIAN_WEEKDAYS[date(g_year, g_month, g_day).weekday()]
+
+
+def format_absence_date(date_text):
+    date_text = normalize_digits(normalize_text(date_text))
+    match = re.search(r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})", date_text)
+    if not match:
+        return date_text
+    year, month, day = (int(part) for part in match.groups())
+    month_name = PERSIAN_MONTHS_BY_NUMBER.get(month)
+    if not month_name:
+        return date_text
+    weekday = jalali_weekday_name(year, month, day)
+    return f"{weekday} {to_persian_digits(day)} {month_name} {to_persian_digits(year)}"
 
 
 def config_or_env(config, env_name, key, default):
@@ -248,7 +338,7 @@ def format_student_schedule(student_name, schedule, schedule_reader):
     if not schedule:
         return f"برای {student_name} در ماه {month_name} برنامه‌ای ثبت نشده است."
     lines = [
-        f"با عرض سلام خدمت {student_name}",
+        f"اینترن گرامی , {student_name}",
         f"برنامه ماه {month_name} کلینیک ویژه شما به صورت زیر است :",
         "",
     ]
@@ -346,21 +436,32 @@ def student_absence_history(config, student_name, absent_text):
         parts = [normalize_text(part) for part in status_text.split("-", 1)]
         status = parts[0]
         professor = parts[1] if len(parts) > 1 else ""
-        if status == absent_text:
-            text = f"غیبت در تاریخ {date_text}"
-        else:
-            text = f"حضور در تاریخ {date_text}"
-        if professor:
-            text += f" در کلاس استاد {professor}"
-        items.append(text)
+        attendance_status = "غیبت" if status == absent_text else "حضور"
+        items.append(
+            {
+                "date": format_absence_date(date_text),
+                "professor": professor,
+                "status": attendance_status,
+            }
+        )
     return items
 
 
-def format_student_absence_history(config, student_name, absent_text):
+def format_student_absence_history(config, student_name, absent_text, schedule_reader=None):
     items = student_absence_history(config, student_name, absent_text)
     if not items:
         return "برای شما حضور و غیابی ثبت نشده است."
-    return "\n\n".join(items)
+    month_name = ""
+    if schedule_reader is not None:
+        _year, _month, month_name = schedule_reader.month_info()
+    header_month = f" ماه {month_name}" if month_name else ""
+    lines = [f"برنامه حضور و غیاب{header_month} شما به صورت زیر است :", ""]
+    for index, item in enumerate(items, start=1):
+        professor = item["professor"] or "نامشخص"
+        lines.append(f"{index}- {item['date']}")
+        lines.append(f"کلینیک {professor} - {item['status']}")
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 def student_reminder_key(chat_id, year, month, day):
